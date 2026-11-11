@@ -1,7 +1,10 @@
-import { createMatcher } from './matcher.js';
-import { createAudio } from './audio.js';
-import { createVisuals, hueOf } from './visuals.js';
-import { loadBundle, setlist } from './store.js';
+import { createMatcher } from './matcher.js?v=mwcbpjn3';
+import { createAudio } from './audio.js?v=mwcbpjn3';
+import { createVisuals, hueOf } from './visuals.js?v=mwcbpjn3';
+import { loadBundle, setlist } from './store.js?v=mwcbpjn3';
+
+// Stamped by tools/stamp.mjs into this file, the module URLs above and the page.
+const VERSION = 'mwcbpjn3';
 
 const $ = (id) => document.getElementById(id);
 const now = () => performance.now() / 1000;
@@ -21,7 +24,49 @@ addEventListener('unhandledrejection', (e) => { $('err').textContent = String(e.
 
 boot();
 
+// The page must be the one this script was written for. Browsers may keep an older copy of the page for a while;
+// with it, elements this script draws into are missing. One reload with a fresh URL fetches the current page.
+function pageIsStale() {
+  const meta = document.querySelector('meta[name="app-version"]');
+  return !meta || meta.content !== VERSION;
+}
+
+function reloadIfStale() {
+  if (!pageIsStale()) return false;
+  let tried = null;
+  try { tried = sessionStorage.getItem('lk.reload'); } catch { /* storage unavailable */ }
+  if (tried === VERSION) return false; // already tried for this version: carry on with what there is
+  try { sessionStorage.setItem('lk.reload', VERSION); } catch { return false; }
+  const u = new URL(location.href);
+  u.searchParams.set('r', Date.now().toString(36));
+  location.replace(u.toString());
+  return true;
+}
+
+// Backstop for an old page: create the elements newer versions added.
+function ensureDom() {
+  const mk = (tag, id, cls, text) => { const e = document.createElement(tag); e.id = id; if (cls) e.className = cls; if (text) e.textContent = text; return e; };
+  if (!$('pace')) {
+    const wrap = mk('div', 'pace'), badge = $('badge');
+    badge.before(wrap);
+    const slower = mk('button', 'slower', 'pc', 'לאט יותר'), faster = mk('button', 'faster', 'pc', 'מהר יותר');
+    slower.hidden = faster.hidden = true;
+    wrap.append(slower, badge, faster);
+  }
+  if (!$('hint')) $('pace').after(mk('div', 'hint'));
+  if (!$('next3')) $('next2').after(mk('p', 'next3', 'ln'));
+  if (!$('stanzas')) $('stage').after(mk('div', 'stanzas'));
+}
+
 async function boot() {
+  const hosted = !['localhost', '127.0.0.1'].includes(location.hostname);
+  if (hosted && 'serviceWorker' in navigator) {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+    // A new service worker took over while an old page is on screen: load the page it would serve.
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (!live && pageIsStale()) location.reload(); });
+  }
+  if (hosted && reloadIfStale()) return;
+  ensureDom();
   visuals = createVisuals($('fx'));
   requestAnimationFrame(frame);
   try {
@@ -50,9 +95,6 @@ async function boot() {
   buildSongList('');
   renderLog();
   wire();
-  if ('serviceWorker' in navigator && !['localhost', '127.0.0.1'].includes(location.hostname)) {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
-  }
   if (demo) startDemo();
   // End-to-end test hook, local server only: start without a tap and report state.
   if (params.has('auto') && location.hostname === 'localhost') {
@@ -155,7 +197,8 @@ function sendDiag(c, hyp) {
     q: (tr.segments || []).slice(0, 4).map((g) => [g.avg_logprob, g.no_speech_prob].map((x) => +Number(x).toFixed(2))),
     top: matcher.debugScores(tr.text || '').slice(0, 3), phase: s.phase, song: s.song && s.song.title, mode: s.mode, paused: s.paused,
   };
-  if (diagN === 1) info.ua = navigator.userAgent;
+  if (diagN === 1) { info.ua = navigator.userAgent; info.v = VERSION; }
+  if ($('err').textContent) info.err = $('err').textContent.slice(0, 140);
   fetch(`https://ntfy.sh/${diagTopic}?filename=c${diagN}.webm&message=${encodeURIComponent(JSON.stringify(info))}`, { method: 'PUT', body: c.blob }).catch(() => {});
   $('heard').style.color = '#ffd27a';
 }
@@ -355,6 +398,8 @@ function startDemo() {
   const sec = [...song.sections].sort((a, b) => b.lines.length - a.lines.length)[0];
   audio.startDemo();
   goLive();
+  // ?pick: the manual route, exactly as tapping the song in the list. No audio is fed.
+  if (params.has('pick')) { matcher.select(song.id, now()); return; }
   // The song "started" nine seconds ago; wall time of a line = w0 + its time in the section.
   const w0 = now() - 9 - sec.lines[0].a;
   const feed = (end) => {
