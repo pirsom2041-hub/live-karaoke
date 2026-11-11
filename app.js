@@ -1,11 +1,11 @@
-import { createMatcher } from './matcher.js?v=mwcd3tjw';
-import { createAudio } from './audio.js?v=mwcd3tjw';
-import { createVisuals, hueOf } from './visuals.js?v=mwcd3tjw';
-import { loadBundle, setlist } from './store.js?v=mwcd3tjw';
-import { keepChunk, keepEvent, count as keptCount, clearAll as clearKept, kept } from './keep.js?v=mwcd3tjw';
+import { createMatcher } from './matcher.js?v=mwcdt1nj';
+import { createAudio } from './audio.js?v=mwcdt1nj';
+import { createVisuals, hueOf } from './visuals.js?v=mwcdt1nj';
+import { loadBundle, setlist } from './store.js?v=mwcdt1nj';
+import { keepChunk, keepEvent, count as keptCount, clearAll as clearKept, kept } from './keep.js?v=mwcdt1nj';
 
 // Stamped by tools/stamp.mjs into this file, the module URLs above and the page.
-const VERSION = 'mwcd3tjw';
+const VERSION = 'mwcdt1nj';
 
 const $ = (id) => document.getElementById(id);
 const now = () => performance.now() / 1000;
@@ -17,7 +17,7 @@ let diagN = 0;
 const bootAt = Date.now();
 
 let bundle = null, matcher = null, audio = null, visuals = null, wake = null;
-let live = false, lastKey = '', lastSung = -1, lastSongId = null, verifying = false, lastVerify = -99;
+let live = false, lastKey = '', lastSung = -1, lastSongId = null, lastSug = null, verifying = false, lastVerify = -99;
 const verifyFailed = new Map();
 const net = { state: 'idle', extra: '' };
 
@@ -293,6 +293,14 @@ function render(t) {
     $('other').classList.toggle('on', locked);
     buildStanzas(locked ? s.stanzas : []);
   }
+  // A song the audio resembles, below the confidence needed to open it: first card in the deck, one tap away.
+  const sugId = s.suggest ? s.suggest.id : null;
+  if (sugId !== lastSug) {
+    lastSug = sugId;
+    buildDeck();
+    if (!locked) $('songTitle').textContent = sugId ? `נשמע כמו: ${s.suggest.title}` : 'בחר שיר, או חכה לזיהוי';
+    if (sugId && navigator.vibrate) navigator.vibrate(30);
+  }
   $('conf').firstElementChild.style.width = `${Math.round(s.conf * 100)}%`;
   setText('heard', s.heard ? `שמעתי: ${s.heard}` : '');
 
@@ -365,14 +373,15 @@ function buildDeck() {
   const el = $('deck');
   el.textContent = '';
   const sung = new Set(setlist.all().filter((e) => e.at >= bootAt).map((e) => e.id));
-  const rank = (s) => (sung.has(s.id) ? 2 : s.lines >= 12 ? 0 : 1);
+  const sug = matcher.state.suggest ? matcher.state.suggest.id : null;
+  const rank = (s) => (s.id === sug ? -1 : sung.has(s.id) ? 2 : s.lines >= 12 ? 0 : 1);
   const items = matcher.songs.filter((s) => s.lines > 0).map((s, i) => [s, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]);
   for (const [s] of items) {
     const b = document.createElement('button');
-    b.className = sung.has(s.id) ? 'card done' : 'card';
+    b.className = s.id === sug ? 'card sug' : sung.has(s.id) ? 'card done' : 'card';
     b.dataset.id = s.id;
     const t = document.createElement('b'); t.textContent = s.title;
-    const sm = document.createElement('small'); sm.textContent = sung.has(s.id) ? 'הושר' : s.lines >= 12 ? 'מילים מלאות' : 'קטע מהשיר';
+    const sm = document.createElement('small'); sm.textContent = s.id === sug ? 'נשמע כמו זה' : sung.has(s.id) ? 'הושר' : s.lines >= 12 ? 'מילים מלאות' : 'קטע מהשיר';
     b.append(t, sm);
     el.append(b);
   }
@@ -458,7 +467,13 @@ function startDemo() {
   audio.startDemo();
   goLive();
   // ?pick: the manual route, exactly as tapping the song in the list. No audio is fed.
-  if (params.has('idle')) return; // the deck, with nothing open
+  if (params.has('idle')) { // the deck, with nothing open; ?sug feeds half a line, enough for a suggestion only
+    if (params.has('sug')) {
+      const l = sec.lines.find((x) => x.x.split(' ').length >= 4);
+      onChunk({ t0: now() - 10, t1: now(), tr: { segments: [{ start: 0, end: 5, text: l.x, avg_logprob: -0.5, no_speech_prob: 0.1, compression_ratio: 1 }], words: [] } });
+    }
+    return;
+  }
   if (params.has('pick')) { matcher.select(song.id, now()); if (params.has('crowd')) $('bTorch').click(); return; }
   // The song "started" nine seconds ago; wall time of a line = w0 + its time in the section.
   const w0 = now() - 9 - sec.lines[0].a;

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
 <meta name="theme-color" content="#08060e">
-<meta name="app-version" content="mwcd3tjw">
+<meta name="app-version" content="mwcdt1nj">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg">
 <title>קריוקי חי</title>
@@ -84,6 +84,8 @@
   .card { display: grid; gap: 5px; align-content: center; min-height: 76px; padding: 12px 14px; border-radius: 16px; background: var(--panel); border: 1px solid var(--line); text-align: start; }
   .card b { font-size: 17px; font-weight: 800; line-height: 1.2; }
   .card small { font-size: 12px; font-weight: 700; color: var(--hot); }
+  .card.sug { grid-column: 1 / -1; border-color: var(--hot); box-shadow: 0 0 22px hsl(var(--h) 100% 60% / .55); }
+  .card.sug b { font-size: 21px; }
   .card.done { opacity: .45; }
   .card.done small { color: var(--dim); }
   .card:active { background: hsl(var(--h) 80% 40% / .5); }
@@ -185,6 +187,6 @@
 
 <div id="torch"><b id="torchT"></b><small>הקשה ליציאה</small></div>
 <div id="err"></div>
-<script type="module" src="app.js?v=mwcd3tjw"></script>
+<script type="module" src="app.js?v=mwcdt1nj"></script>
 </body>
 </html>

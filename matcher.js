@@ -30,7 +30,8 @@ export function createMatcher(catalog, opts = {}) {
     switchChunk: 1.6,  // chunk score for another song that steals the lock
     decay: 0.6,
     lostAfter: 150,    // seconds without any match before the lock is released (far-field audio matches rarely)
-    hypMin: 0.45,      // weakest candidate worth a second, lyric-hinted transcription
+    hypMin: 0.3,       // weakest candidate worth a second, lyric-hinted transcription
+    sugMin: 0.3,       // weakest candidate shown to the user as a suggestion
     verifyMin: 2.5,    // score the hinted transcription must reach to lock
     pace: 1,           // multiplier on the estimated timing of web lyrics (above 1 is slower)
     onEvent: () => {},
@@ -94,6 +95,7 @@ export function createMatcher(catalog, opts = {}) {
     hold: false,         // the user set the timing by hand
     lastMatch: 0, lockedAt: 0, miss: 0,
     ev: new Map(), captions: [], pending: [], heard: '', conf: 0, lastCapEnd: 0,
+    sug: null,           // { id, title, at }: a song the audio resembles, not confident enough to open by itself
   };
 
   // Real lyrics (from the web) are the only thing ever displayed for a song that has them:
@@ -200,7 +202,7 @@ export function createMatcher(catalog, opts = {}) {
 
   function lock(song, now, manual) {
     const prev = st.song;
-    st.phase = 'locked'; st.song = song; st.manual = !!manual; st.hold = false; st.heardAt = null;
+    st.phase = 'locked'; st.song = song; st.manual = !!manual; st.hold = false; st.heardAt = null; st.sug = null;
     // Known lyrics are on screen from the first moment, waiting for a tap or a match to start moving.
     st.anchor = sheet(song); st.mode = st.anchor ? 'karaoke' : 'captions';
     st.lastMatch = now; st.lockedAt = now; st.miss = 0;
@@ -267,6 +269,7 @@ export function createMatcher(catalog, opts = {}) {
     const { words, text, T, caps: allCaps } = parse(chunk);
     st.heard = text;
     for (const [k, v] of st.ev) { const nv = v * O.decay; if (nv < 0.05) st.ev.delete(k); else st.ev.set(k, nv); }
+    if (st.sug && t1 - st.sug.at > 45) st.sug = null;
     if (!text) { tick(t1); return null; }
 
     const caps = allCaps.filter((c) => c.a >= st.lastCapEnd - 0.4);
@@ -296,6 +299,8 @@ export function createMatcher(catalog, opts = {}) {
     st.pending.push(...caps);
     st.pending = st.pending.filter((c) => c.a > t1 - 90);
     st.conf = top ? Math.min(1, evOf(top[0]) / 3) * 0.6 : 0;
+    // A weak but real resemblance is offered as a suggestion; it stays for 45 s after it was last seen.
+    if (top && top[1] >= O.sugMin) st.sug = { id: top[0].id, title: top[0].title, at: t1 };
     tick(t1);
     return top && top[1] >= O.hypMin ? { id: top[0].id, title: top[0].title, score: +top[1].toFixed(2) } : null;
   }
@@ -436,6 +441,7 @@ export function createMatcher(catalog, opts = {}) {
     liveHint(now) { return st.phase === 'locked' ? hint(st.song, null, now) : ''; },
     get state() {
       return { phase: st.phase, song: pub(st.song), manual: st.manual, mode: st.mode, captions: st.captions, heard: st.heard, conf: st.conf,
+        suggest: st.phase !== 'locked' && st.sug ? { id: st.sug.id, title: st.sug.title } : null,
         paused: !!(st.anchor && st.anchor.paused), hold: st.hold, hasLines: !!(st.song && mainSec(st.song)),
         stanzas: (st.song && fullSec(st.song) ? fullSec(st.song).stanzas : []), pace, full: !!(st.anchor && st.anchor.sec.full),
         known: st.song ? secsOf(st.song).reduce((n, s) => n + s.lines.length, 0) : 0 };
