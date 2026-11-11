@@ -104,6 +104,27 @@ async function unknown(opts) {
   return r;
 }
 
+// Web lyrics against real audio: the song keeps only its web lyrics, and its Deezer clip transcript is replayed.
+async function webHoldout(opts) {
+  const r = { ok: 0, wrong: 0, none: 0, karaoke: 0 };
+  for (const song of catalog.songs) {
+    const webSec = song.sections.find((s) => s.src === 'web');
+    const held = song.sections.find((s) => s.src === 'dz' && !s.live);
+    if (!webSec || !held) continue;
+    const tr = await trOf(held);
+    if (!tr) continue;
+    const m = createMatcher({ ...catalog, songs: catalog.songs.map((s) => (s === song ? { ...s, sections: [webSec] } : s)) }, opts); m.start();
+    let got = null, k = false;
+    for (const c of chunks(tr)) {
+      m.feedChunk(c);
+      if (m.state.phase === 'locked' && !got) got = m.state.song;
+      if (m.state.phase === 'locked' && m.state.mode === 'karaoke' && !m.state.paused) k = true;
+    }
+    if (!got) { r.none++; if (verbose) console.log(`    web none: ${song.title}`); } else if (got.id === song.id) { r.ok++; if (k) r.karaoke++; } else { r.wrong++; console.log(`    web wrong: ${song.title} -> ${got.title}`); }
+  }
+  return r;
+}
+
 function chatterLocks(opts) {
   const lines = ['ערב טוב לכולם תודה רבה שבאתם אני כל כך מתרגשת להיות פה איתכם הערב', 'אני רוצה לראות את כל הידיים למעלה תעשו רעש', 'השיר הבא נכתב לפני הרבה שנים והוא מלווה אותי כל החיים', 'תודה רבה לנגנים המדהימים שלי ולכל הצוות שעובד מאחורי הקלעים', 'אני אוהבת אתכם אתם הקהל הכי טוב שיש'];
   const m = createMatcher(catalog, opts); m.start();
@@ -123,6 +144,7 @@ if (process.argv.includes('--sweep')) {
   console.log(`synthetic: ${JSON.stringify(s)}`);
   console.log(`hold-out (other store's clip vs Deezer-only index): ${JSON.stringify(h)}`);
   console.log(`unknown songs: ${JSON.stringify(u)}`);
+  console.log(`web lyrics vs the song's own clip: ${JSON.stringify(await webHoldout({}))}`);
   console.log(`stage chatter: ${chat ? 'FALSE LOCK' : 'no lock'}`);
   if (s.wrong > 1 || h.wrong > 1 || u.falseLock > 3 || chat) { console.error('FAIL'); process.exit(1); }
   console.log('PASS');

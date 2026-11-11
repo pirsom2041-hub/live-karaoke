@@ -230,6 +230,45 @@ async function main() {
     }
     catalog.songs.push({ id: `s${catalog.songs.length + 1}`, title: s.title, album: s.album, year: s.year, dur: s.dur, sections });
   }
+  // Full lyrics from the web (tools/fetch-lyrics.mjs). They become the song's main section; the clip transcripts stay
+  // alongside for matching. Web lyrics carry no timing, so each line gets a duration from the song's own measured pace.
+  const web = await readJson(path.join(CACHE, 'mz', 'lyrics.json'), []);
+  const WEB_ALIAS = { 'דימעה אחרונה': 'דמעה אחרונה', 'חפש אחת': 'חפש אחרת', 'ייסוריי אהבה': 'ייסורי אהבה', 'לנצח לאוהב': 'לנצח לאהוב',
+    'על השקרים שלך': 'כל השקרים שלך', 'אני בוכה': KMO_SHELANU, 'שילגיה': 'שלגיה' };
+  const best = new Map();
+  for (const w of web) {
+    let title = cleanTitle(w.title);
+    title = WEB_ALIAS[title] || title;
+    let song = catalog.songs.find((s) => s.title === title || s.title.split(' · ').includes(title));
+    if (!song) {
+      song = { id: `s${catalog.songs.length + 1}`, title, album: '', year: 0, dur: 0, sections: [] };
+      catalog.songs.push(song);
+      console.log('  web lyrics for a song not in the stores:', title);
+    }
+    const n = w.lines.filter(Boolean).length;
+    if (!best.has(song) || n > best.get(song).n) best.set(song, { n, lines: w.lines });
+  }
+  for (const [song, w] of best) {
+    const timed = song.sections.filter((s) => s.lines.length >= 3).sort((a, b) => b.lines.length - a.lines.length)[0];
+    let spw = 0.72;
+    if (timed) {
+      const words = timed.lines.reduce((k, l) => k + l.x.split(' ').length, 0);
+      spw = Math.min(1.1, Math.max(0.45, (timed.lines[timed.lines.length - 1].b - timed.lines[0].a) / words));
+    }
+    let t = 0;
+    const lines = [];
+    for (const raw of w.lines) {
+      if (!raw) { t += 1.5; continue; }
+      const x = raw.replace(/[.,!?"]/g, '').replace(/\s+/g, ' ').trim();
+      if (!x) continue;
+      const d = Math.max(1.8, x.split(' ').length * spw);
+      lines.push({ a: +t.toFixed(2), b: +(t + d).toFixed(2), x });
+      t += d + 0.25;
+    }
+    song.sections.unshift({ src: 'web', full: true, lines });
+  }
+  console.log(`  full web lyrics attached to ${best.size} songs`);
+
   await writeFile(path.join(ROOT, 'catalog.json'), JSON.stringify(catalog));
   const withLyrics = catalog.songs.filter((s) => s.sections.length).length;
   console.log(`catalog.json: ${catalog.songs.length} songs, ${withLyrics} with lyric sections, ${catalog.songs.reduce((n, s) => n + s.sections.reduce((m, x) => m + x.lines.length, 0), 0)} lines`);

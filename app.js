@@ -12,7 +12,7 @@ const diagTopic = /^[a-z0-9-]{12,64}$/.test(params.get('diag') || '') ? params.g
 let diagN = 0;
 
 let bundle = null, matcher = null, audio = null, visuals = null, wake = null;
-let live = false, lastKey = '', lastSung = -1, lastSongId = null;
+let live = false, lastKey = '', lastSung = -1, lastSongId = null, verifying = false;
 const net = { state: 'idle', extra: '' };
 
 addEventListener('error', (e) => { $('err').textContent = `${e.message} @${(e.filename || '').split('/').pop()}:${e.lineno}`; });
@@ -39,9 +39,10 @@ async function boot() {
     model: () => bundle.catalog.liveModel || 'whisper-large-v3',
     onChunk,
     onStatus: (s, extra) => { net.state = s; net.extra = extra || ''; },
-    cycleProfiles: diagTopic ? ['raw', 'dsp'] : null,
+    hint: () => matcher.liveHint(now()),
   });
-  $('count').textContent = `${matcher.songs.length} שירים טעונים`;
+  const full = matcher.songs.filter((s) => s.lines >= 12).length;
+  $('count').textContent = `${matcher.songs.length} שירים טעונים, ${full} מהם עם מילים מלאות`;
   $('go').disabled = false;
   buildSongList('');
   renderLog();
@@ -55,7 +56,7 @@ async function boot() {
     await start();
     setInterval(() => {
       const s = matcher.state;
-      fetch('/api/report', { method: 'POST', body: JSON.stringify({ t: Math.round(now()), phase: s.phase, song: s.song && s.song.id, mode: s.mode, conf: +s.conf.toFixed(2), heardChars: s.heard.length, known: s.known, net: audio.net }) }).catch(() => {});
+      fetch('/api/report', { method: 'POST', body: JSON.stringify({ t: Math.round(now()), phase: s.phase, song: s.song && s.song.id, mode: s.mode, paused: s.paused, conf: +s.conf.toFixed(2), heardChars: s.heard.length, known: s.known, net: audio.net }) }).catch(() => {});
     }, 3000);
   }
 }
@@ -70,9 +71,14 @@ function wire() {
     const li = e.target.closest('li[data-id]');
     if (!li) return;
     matcher.select(li.dataset.id, now());
+    audio.setMode(true);
     $('sheetSongs').classList.remove('on');
   };
-  $('other').onclick = () => matcher.release(now());
+  $('other').onclick = () => { matcher.release(now()); audio.setMode(false); };
+  // Tap the lyrics: start the waiting line now, or jump to the next one. Tap the line above: go back one.
+  $('stage').onclick = (e) => {
+    if (matcher.nudge(e.target.closest('#prev') ? -1 : 1, now())) { lastKey = ''; if (navigator.vibrate) navigator.vibrate(15); }
+  };
   $('bTorch').onclick = () => { visuals.setTorch(true); $('torch').classList.add('on'); $('live').style.visibility = 'hidden'; };
   $('torch').onclick = () => { visuals.setTorch(false); $('torch').classList.remove('on'); $('live').style.visibility = ''; };
   $('share').onclick = shareLog;
@@ -107,23 +113,38 @@ async function keepAwake() {
   try { if ('wakeLock' in navigator) wake = await navigator.wakeLock.request('screen'); } catch { /* optional */ }
 }
 
-function onChunk(c) {
-  matcher.feedChunk(c);
+async function onChunk(c) {
+  const hyp = matcher.feedChunk(c);
   audio.setMode(matcher.state.phase === 'locked');
-  if (diagTopic && c.blob) sendDiag(c);
+  if (diagTopic && c.blob) sendDiag(c, hyp);
+  // A weak candidate gets a second transcription of the same audio, hinted with that song's lyrics.
+  if (!hyp || !c.blob || verifying || matcher.state.phase === 'locked') return;
+  verifying = true;
+  try {
+    const hintText = matcher.hintFor(hyp.id, c.tr.text || '');
+    const tr = hintText ? await audio.transcribe(c.blob, hintText) : null;
+    if (!tr) return;
+    const v = matcher.verify({ t0: c.t0, t1: c.t1, tr }, hyp.id);
+    audio.setMode(matcher.state.phase === 'locked');
+    if (diagTopic) diagNote({ verify: hyp.title, before: hyp.score, after: v && v.score, ok: !!(v && v.ok), text: (tr.text || '').slice(0, 200) });
+  } finally { verifying = false; }
 }
 
-function sendDiag(c) {
+function sendDiag(c, hyp) {
   const s = matcher.state, tr = c.tr;
   const info = {
-    n: ++diagN, dur: +(c.t1 - c.t0).toFixed(1), m: c.meta,
+    n: ++diagN, dur: +(c.t1 - c.t0).toFixed(1), m: c.meta, hyp,
     text: (tr.text || '').slice(0, 260),
-    q: (tr.segments || []).slice(0, 6).map((g) => [g.avg_logprob, g.no_speech_prob, g.compression_ratio].map((x) => +Number(x).toFixed(2))),
-    top: matcher.debugScores(tr.text || '').slice(0, 3), phase: s.phase, song: s.song && s.song.title, mode: s.mode,
+    q: (tr.segments || []).slice(0, 4).map((g) => [g.avg_logprob, g.no_speech_prob].map((x) => +Number(x).toFixed(2))),
+    top: matcher.debugScores(tr.text || '').slice(0, 3), phase: s.phase, song: s.song && s.song.title, mode: s.mode, paused: s.paused,
   };
   if (diagN === 1) info.ua = navigator.userAgent;
   fetch(`https://ntfy.sh/${diagTopic}?filename=c${diagN}.webm&message=${encodeURIComponent(JSON.stringify(info))}`, { method: 'PUT', body: c.blob }).catch(() => {});
   $('heard').style.color = '#ffd27a';
+}
+
+function diagNote(obj) {
+  fetch(`https://ntfy.sh/${diagTopic}`, { method: 'POST', body: JSON.stringify(obj) }).catch(() => {});
 }
 
 function onEvent(ev) {
@@ -155,7 +176,7 @@ function render(t) {
   const s = matcher.state;
   const locked = s.phase === 'locked';
 
-  const chipText = net.state === 'error' && net.extra === 'key' ? 'בעיה במפתח' : locked && net.state === 'listening' ? 'זוהה' : CHIP[net.state] || 'מקשיבה';
+  const chipText = net.state === 'error' && net.extra === 'key' ? 'בעיה במפתח' : locked && net.state === 'listening' ? (s.manual ? 'נבחר' : 'זוהה') : CHIP[net.state] || 'מקשיבה';
   setText('chipT', chipText);
   $('chip').classList.toggle('warn', net.state !== 'listening' && net.state !== 'idle');
 
@@ -175,10 +196,11 @@ function render(t) {
   const p = locked && s.mode === 'karaoke' ? matcher.position(t) : null;
   if (p) {
     const L = p.lines, i = p.idx;
-    const key = `k|${songId}|${i}|${L.length}|${L[i].x}`;
+    const key = `k|${songId}|${i}|${L.length}|${p.paused ? 'p' : 'r'}`;
     if (key !== lastKey) {
       lastKey = key; lastSung = -1;
-      setBadge(true);
+      setBadge(p.paused ? 'מילים' : 'קריוקי', true);
+      setText('hint', p.paused ? 'הקשה על המסך ברגע שהיא מתחילה את השורה הזאת' : 'הקשה: לשורה הבאה · הקשה על השורה שמעל: חזרה');
       $('prev').textContent = i > 0 ? L[i - 1].x : '';
       setCurrent(L[i].x, false);
       $('next1').textContent = L[i + 1] ? L[i + 1].x : '';
@@ -192,10 +214,11 @@ function render(t) {
     }
   } else {
     const c = s.captions, n = c.length;
-    const key = `c|${n ? c[n - 1].a : 0}|${n}`;
+    const key = `c|${n ? c[n - 1].a : 0}|${n}|${songId}|${s.hasLines}`;
     if (key !== lastKey) {
       lastKey = key; lastSung = -1;
-      setBadge(false);
+      setBadge('חי', false);
+      setText('hint', !locked ? '' : s.hasLines ? 'המילים שיש לי לשיר הזה נגמרו. הקשה מחזירה אותן להתחלה' : 'אין לי מילים לשיר הזה, מוצג מה שנשמע');
       $('prev').textContent = n > 1 ? c[n - 2].x : '';
       setCurrent(n ? c[n - 1].x : '', true);
       $('next1').textContent = '';
@@ -206,10 +229,10 @@ function render(t) {
 
 function setText(id, text) { const el = $(id); if (el.textContent !== text) el.textContent = text; }
 
-function setBadge(karaoke) {
+function setBadge(text, strong) {
   const b = $('badge');
-  b.textContent = karaoke ? 'קריוקי' : 'חי';
-  b.classList.toggle('k', karaoke);
+  b.textContent = text;
+  b.classList.toggle('k', strong);
 }
 
 function setCurrent(text, caption) {
@@ -231,13 +254,15 @@ function buildSongList(q) {
   const ul = $('songList');
   ul.textContent = '';
   const needle = q.trim();
-  const items = matcher.songs.filter((s) => !needle || s.title.includes(needle));
+  const items = matcher.songs.filter((s) => !needle || s.title.includes(needle)).sort((a, b) => (b.lines >= 12) - (a.lines >= 12));
   if (!items.length) { const li = document.createElement('li'); li.className = 'empty'; li.textContent = 'לא נמצא שיר כזה'; ul.append(li); return; }
   for (const s of items) {
     const li = document.createElement('li');
     li.dataset.id = s.id;
     const b = document.createElement('b'); b.textContent = s.title;
-    const sm = document.createElement('small'); sm.textContent = s.album || '';
+    const sm = document.createElement('small');
+    sm.textContent = s.lines >= 12 ? 'מילים מלאות' : s.lines ? 'קטע מהשיר' : 'בלי מילים';
+    if (s.lines >= 12) sm.className = 'full';
     li.append(b, sm);
     ul.append(li);
   }
@@ -273,12 +298,12 @@ async function shareLog() {
 // ---------- demo (no microphone): replays a catalog song through the matcher ----------
 function startDemo() {
   const want = params.get('demo');
-  const song = bundle.catalog.songs.find((s) => s.title.includes(want) && s.sections.length) || bundle.catalog.songs.find((s) => s.sections.some((x) => x.lines.length >= 6));
+  const song = bundle.catalog.songs.find((s) => want && s.title.includes(want) && s.sections.length) || bundle.catalog.songs.find((s) => s.sections.some((x) => x.lines.length >= 6));
   if (!song) return;
   const sec = [...song.sections].sort((a, b) => b.lines.length - a.lines.length)[0];
   audio.startDemo();
   goLive();
-  // The song "started" nine seconds ago; wall time of a line = w0 + its time in the clip.
+  // The song "started" nine seconds ago; wall time of a line = w0 + its time in the section.
   const w0 = now() - 9 - sec.lines[0].a;
   const feed = (end) => {
     const from = end - 10;

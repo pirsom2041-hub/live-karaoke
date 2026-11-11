@@ -2,46 +2,33 @@
 const GROQ_URL = 'https://api.groq.com/openai/v1/audio/transcriptions';
 const now = () => performance.now() / 1000;
 
-// Capture profiles. "raw" keeps the phone from treating music as noise; "dsp" is the phone's voice-call processing.
-const PROFILES = {
-  raw: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
-  agc: { echoCancellation: false, noiseSuppression: false, autoGainControl: true },
-  dsp: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-};
+// Raw capture. Measured on a phone: the voice-call processing (noise suppression) strips music almost to silence.
+const CAPTURE = { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 };
 
-export function createAudio({ getKey, model, onChunk, onStatus, profile = 'raw', cycleProfiles = null, prompt = null }) {
-  let stream = null, ctx = null, analyser = null, srcNode = null, freq = null, wave = null;
+export function createAudio({ getKey, model, onChunk, onStatus, hint = null }) {
+  let stream = null, ctx = null, analyser = null, freq = null, wave = null;
   let running = false, timer = 0, inflight = 0, pausedUntil = 0, demo = false;
-  let hop = 6, len = 8; // searching: shorter overlapping chunks, so the first match comes sooner
-  let cur = profile, cycleN = 0;
+  // Searching: long chunks, because short ones of far-field music rarely transcribe into anything usable.
+  let hop = 10, len = 16;
   // Each Whisper model has its own free quota. The second one is clearly weaker on sung Hebrew, so it is only a stopgap.
   const ALT = 'whisper-large-v3-turbo';
   let altUntil = 0;
-  const pickModel = () => (now() < altUntil ? ALT : model());
   const hist = [];
   let lastBeat = 0, beatLevel = 0;
   const lvl = { sum: 0, n: 0, peak: 0 };
   const net = { ok: 0, fail: 0, lastMs: 0, state: 'idle' };
   const status = (s, extra) => { net.state = s; onStatus && onStatus(s, extra); };
 
-  async function open(name) {
-    const s = await navigator.mediaDevices.getUserMedia({ audio: { ...PROFILES[name], channelCount: 1 } });
-    if (stream) stream.getTracks().forEach((t) => t.stop());
-    if (srcNode) srcNode.disconnect();
-    stream = s; cur = name;
-    srcNode = ctx.createMediaStreamSource(stream);
-    srcNode.connect(analyser);
-  }
-
   async function start() {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: CAPTURE });
     ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (ctx.state === 'suspended') await ctx.resume();
     analyser = ctx.createAnalyser();
     analyser.fftSize = 1024;
     analyser.smoothingTimeConstant = 0.55;
+    ctx.createMediaStreamSource(stream).connect(analyser);
     freq = new Uint8Array(analyser.frequencyBinCount);
     wave = new Uint8Array(analyser.fftSize);
-    try { await open(cur); } catch (e) { ctx.close(); ctx = analyser = null; throw e; }
-    if (ctx.state === 'suspended') await ctx.resume();
     running = true;
     status('listening');
     cycle();
@@ -56,22 +43,17 @@ export function createAudio({ getKey, model, onChunk, onStatus, profile = 'raw',
     stream = ctx = analyser = null;
   }
 
-  async function cycle() {
+  function cycle() {
     if (!running || demo) return;
-    if (cycleProfiles && cycleN && cycleN % 4 === 0) {
-      try { await open(cycleProfiles[(cycleN / 4) % cycleProfiles.length]); } catch (e) { /* keep the current stream */ }
-    }
-    cycleN++;
     if (!document.hidden) record();
     timer = setTimeout(cycle, hop * 1000);
   }
 
   function record() {
     let rec;
-    const used = cur, st = stream;
     try {
       const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'].find((m) => MediaRecorder.isTypeSupported(m));
-      rec = new MediaRecorder(st, mime ? { mimeType: mime, audioBitsPerSecond: 48000 } : undefined);
+      rec = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 48000 } : undefined);
     } catch (e) { status('error', 'recorder'); return; }
     const parts = [];
     let t0 = now();
@@ -79,13 +61,48 @@ export function createAudio({ getKey, model, onChunk, onStatus, profile = 'raw',
     rec.onstart = () => { t0 = now(); };
     rec.ondataavailable = (e) => { if (e.data && e.data.size) parts.push(e.data); };
     rec.onstop = () => {
-      const t1 = now();
-      const track = st.getAudioTracks()[0];
-      const meta = { profile: used, level: lvl.n ? +(lvl.sum / lvl.n).toFixed(3) : 0, peak: +lvl.peak.toFixed(3), sr: ctx ? ctx.sampleRate : 0, set: track && track.getSettings ? track.getSettings() : null };
-      send(new Blob(parts, { type: rec.mimeType || 'audio/webm' }), t0, t1, meta);
+      const meta = { level: lvl.n ? +(lvl.sum / lvl.n).toFixed(3) : 0, peak: +lvl.peak.toFixed(3) };
+      send(new Blob(parts, { type: rec.mimeType || 'audio/webm' }), t0, now(), meta);
     };
     rec.start();
     setTimeout(() => { if (rec.state !== 'inactive') rec.stop(); }, len * 1000);
+  }
+
+  // One transcription. hintText: lyrics the audio is expected to contain (improves far-field transcripts a lot).
+  async function post(blob, hintText) {
+    const key = getKey();
+    if (!key) { status('error', 'key'); return null; }
+    const ext = blob.type.includes('mp4') ? 'm4a' : 'webm';
+    // Main model first. If its quota answers 429, send this same chunk to the other model and stay there briefly.
+    const order = now() < altUntil ? [ALT] : [model(), ALT];
+    for (let i = 0; i < order.length; i++) {
+      const used = order[i];
+      const fd = new FormData();
+      fd.append('file', blob, `chunk.${ext}`);
+      fd.append('model', used);
+      fd.append('language', 'he');
+      fd.append('response_format', 'verbose_json');
+      fd.append('temperature', '0');
+      fd.append('timestamp_granularities[]', 'word');
+      fd.append('timestamp_granularities[]', 'segment');
+      if (hintText) fd.append('prompt', hintText);
+      const ctl = new AbortController();
+      const to = setTimeout(() => ctl.abort(), 20000);
+      const r = await fetch(GROQ_URL, { method: 'POST', headers: { authorization: `Bearer ${key}` }, body: fd, signal: ctl.signal });
+      clearTimeout(to);
+      if (r.status === 400 && hintText) { hintText = ''; i--; continue; } // hint too long for the model: send without it
+      if (r.status === 429) {
+        if (used !== ALT) { altUntil = now() + 30; continue; }
+        const wait = Number(r.headers.get('retry-after')) || 20;
+        pausedUntil = now() + Math.min(wait, 120);
+        status('limited', Math.round(wait));
+        return null;
+      }
+      if (r.status === 401) { status('error', 'key'); return null; }
+      if (!r.ok) { net.fail++; status('error', `http ${r.status}`); return null; }
+      return { tr: await r.json(), used };
+    }
+    return null;
   }
 
   async function send(blob, t0, t1, meta) {
@@ -93,48 +110,24 @@ export function createAudio({ getKey, model, onChunk, onStatus, profile = 'raw',
     if (now() < pausedUntil) return;
     if (inflight >= 2) return; // the network is behind: drop instead of queueing stale audio
     if (!navigator.onLine) { status('offline'); return; }
-    const key = getKey();
-    if (!key) { status('error', 'key'); return; }
     inflight++;
     const started = now();
     try {
-      const ext = blob.type.includes('mp4') ? 'm4a' : 'webm';
-      const p = prompt && prompt();
-      // Main model first. If its quota answers 429, send this same chunk to the other model and stay there briefly.
-      const order = now() < altUntil ? [ALT] : [model(), ALT];
-      for (const used of order) {
-        const fd = new FormData();
-        fd.append('file', blob, `chunk.${ext}`);
-        fd.append('model', used);
-        fd.append('language', 'he');
-        fd.append('response_format', 'verbose_json');
-        fd.append('temperature', '0');
-        fd.append('timestamp_granularities[]', 'word');
-        fd.append('timestamp_granularities[]', 'segment');
-        if (p) fd.append('prompt', p);
-        const ctl = new AbortController();
-        const to = setTimeout(() => ctl.abort(), 15000);
-        const r = await fetch(GROQ_URL, { method: 'POST', headers: { authorization: `Bearer ${key}` }, body: fd, signal: ctl.signal });
-        clearTimeout(to);
-        if (r.status === 429) {
-          if (used !== ALT) { altUntil = now() + 30; continue; }
-          const wait = Number(r.headers.get('retry-after')) || 20;
-          pausedUntil = now() + Math.min(wait, 120);
-          status('limited', Math.round(wait));
-          return;
-        }
-        if (r.status === 401) { status('error', 'key'); return; }
-        if (!r.ok) { net.fail++; status('error', `http ${r.status}`); return; }
-        const tr = await r.json();
-        net.ok++; net.lastMs = Math.round((now() - started) * 1000);
-        status('listening');
-        if (running) onChunk({ t0, t1, tr, blob, meta: { ...meta, model: used, ms: net.lastMs, bytes: blob.size, mime: blob.type } });
-        return;
-      }
+      const r = await post(blob, hint ? hint() : '');
+      if (!r) return;
+      net.ok++; net.lastMs = Math.round((now() - started) * 1000);
+      status('listening');
+      if (running) onChunk({ t0, t1, tr: r.tr, blob, meta: { ...meta, model: r.used, ms: net.lastMs, bytes: blob.size } });
     } catch (e) {
       net.fail++;
       status(navigator.onLine ? 'slow' : 'offline');
     } finally { inflight--; }
+  }
+
+  // Second pass over a chunk already recorded, with a lyric hint.
+  async function transcribe(blob, hintText) {
+    if (now() < pausedUntil || !navigator.onLine) return null;
+    try { const r = await post(blob, hintText); return r && r.tr; } catch (e) { return null; }
   }
 
   // Called every animation frame. Values are 0..1.
@@ -163,8 +156,9 @@ export function createAudio({ getKey, model, onChunk, onStatus, profile = 'raw',
   }
 
   return {
-    start, startDemo, stop, levels,
-    setMode(locked) { hop = locked ? 10 : 6; len = locked ? 10 : 8; },
+    start, startDemo, stop, levels, transcribe,
+    // Locked on a song: chunks back to back, each sent with that song's lyrics as a hint.
+    setMode(locked) { hop = 10; len = locked ? 12 : 16; },
     get net() { return net; },
     get running() { return running; },
   };
