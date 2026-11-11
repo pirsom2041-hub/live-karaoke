@@ -34,7 +34,9 @@ async function boot() {
       : 'לא הצלחתי לטעון את השירים. בדוק חיבור לרשת ונסה שוב.';
     return;
   }
-  matcher = createMatcher(bundle.catalog, { onEvent });
+  let savedPace = 1;
+  try { const v = parseFloat(localStorage.getItem('lk.pace')); if (v > 0.4 && v < 2.5) savedPace = v; } catch { /* storage unavailable */ }
+  matcher = createMatcher(bundle.catalog, { onEvent, pace: savedPace });
   audio = createAudio({
     getKey: () => bundle.groqKey,
     model: () => bundle.catalog.liveModel || 'whisper-large-v3',
@@ -84,6 +86,14 @@ function wire() {
   $('stage').onclick = (e) => {
     if (matcher.nudge(e.target.closest('#prev') ? -1 : 1, now())) { lastKey = ''; if (navigator.vibrate) navigator.vibrate(15); }
   };
+  // Pace buttons: the estimated timing of the lyrics, for every song, remembered on this phone.
+  const pace = (f) => {
+    const v = matcher.setPace(matcher.state.pace * f, now());
+    try { localStorage.setItem('lk.pace', String(v)); } catch { /* storage unavailable */ }
+    if (navigator.vibrate) navigator.vibrate(15);
+  };
+  $('slower').onclick = (e) => { e.stopPropagation(); pace(1.15); };
+  $('faster').onclick = (e) => { e.stopPropagation(); pace(1 / 1.15); };
   $('bTorch').onclick = () => { visuals.setTorch(true); $('torch').classList.add('on'); $('live').style.visibility = 'hidden'; };
   $('torch').onclick = () => { visuals.setTorch(false); $('torch').classList.remove('on'); $('live').style.visibility = ''; };
   $('share').onclick = shareLog;
@@ -155,6 +165,7 @@ function diagNote(obj) {
 }
 
 function onEvent(ev) {
+  if (ev.type === 'pace') { try { localStorage.setItem('lk.pace', String(ev.pace)); } catch { /* storage unavailable */ } }
   if (ev.type === 'lock') {
     setlist.add(ev.song, ev.manual);
     const h = hueOf(ev.song.title);
@@ -207,6 +218,7 @@ function render(t) {
   setText('heard', s.heard ? `שמעתי: ${s.heard}` : '');
 
   const p = locked && s.mode === 'karaoke' ? matcher.position(t) : null;
+  $('slower').hidden = $('faster').hidden = !(p && s.full);
   if (p) {
     const L = p.lines, i = p.idx;
     const key = `k|${songId}|${i}|${L.length}|${p.paused ? 'p' : 'r'}|${p.end ? 'e' : ''}|${p.wait ? 'w' : ''}`;

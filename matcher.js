@@ -32,6 +32,7 @@ export function createMatcher(catalog, opts = {}) {
     lostAfter: 150,    // seconds without any match before the lock is released (far-field audio matches rarely)
     hypMin: 0.45,      // weakest candidate worth a second, lyric-hinted transcription
     verifyMin: 2.5,    // score the hinted transcription must reach to lock
+    pace: 1,           // multiplier on the estimated timing of web lyrics (above 1 is slower)
     onEvent: () => {},
     ...opts,
   };
@@ -50,7 +51,7 @@ export function createMatcher(catalog, opts = {}) {
   const mkLine = (l) => {
     const n = norm(l.x);
     const g = [...grams(n)];
-    return { a: l.a, b: l.b, x: l.x, n, g, w: weigh(g), k: n ? n.split(' ').length : 0, stz: !!l.s };
+    return { a: l.a, b: l.b, a0: l.a, b0: l.b, x: l.x, n, g, w: weigh(g), k: n ? n.split(' ').length : 0, stz: !!l.s };
   };
   const songs = catalog.songs.map((s) => {
     // A song may carry two names ("a · b"); each is checked on its own.
@@ -67,6 +68,10 @@ export function createMatcher(catalog, opts = {}) {
     };
   });
   const byId = new Map(songs.map((s) => [s.id, s]));
+  // Web lyrics have estimated timing. One multiplier, set from the pace buttons, stretches or squeezes all of it.
+  let pace = Math.min(2.5, Math.max(0.4, O.pace || 1));
+  const applyPace = () => { for (const s of songs) for (const sec of s.sections) if (sec.full) for (const l of sec.lines) { l.a = l.a0 * pace; l.b = l.b0 * pace; } };
+  applyPace();
   // A title that is an everyday phrase ("רוצה אותך") shows up inside other songs, so it is weak evidence.
   const fullText = songs.map((s) => grams(s.sections.flatMap((sec) => sec.lines.map((l) => l.n)).join(' ')));
   songs.forEach((s, i) => {
@@ -143,9 +148,10 @@ export function createMatcher(catalog, opts = {}) {
     return best;
   }
 
-  function matchLines(song, T, words, t0) {
+  function matchLines(song, T, words, t0, t1) {
     const cands = [];
     const cur = st.anchor && !st.anchor.paused ? st.anchor : null;
+    const curIdx = st.anchor ? (st.anchor.paused ? st.anchor.idx : lineAt(st.anchor.sec, t1 - st.anchor.offset)) : -1;
     for (const sec of showSecs(song)) sec.lines.forEach((l, i) => {
       if (sec.learned && l.b > t0 - 2) return;
       if (l.k < 2) return;
@@ -153,7 +159,7 @@ export function createMatcher(catalog, opts = {}) {
       if (c < 0.6) return;
       const loc = words.length ? locate(l, words) : null;
       if (!loc || loc.sim < 0.45) return;
-      cands.push({ sec, i, offset: loc.s - l.a, w: l.w * c });
+      cands.push({ sec, i, offset: loc.s - l.a, w: l.w * c, c, k: l.k });
     });
     if (!cands.length) return null;
     const bySec = new Map();
@@ -166,11 +172,18 @@ export function createMatcher(catalog, opts = {}) {
       const group = cs.filter((c) => Math.abs(c.offset - center.offset) <= 1.5);
       let sup = group.reduce((n, c) => n + c.w, 0);
       if (cur && cur.sec === sec && Math.abs(center.offset - cur.offset) <= 3) sup *= 1.3;
+      // A repeated line (a chorus) matches in several places: prefer the one nearest to where the display is.
+      if (curIdx >= 0 && st.anchor.sec === sec) sup *= 1 + 0.25 * Math.exp(-Math.abs(center.i - curIdx) / 4);
       if (!best || sup > best.sup) best = { sup, group };
     }
     const tw = best.group.reduce((n, c) => n + c.w, 0);
     const offset = best.group.reduce((n, c) => n + c.offset * c.w, 0) / tw;
-    return { sec, offset, support: tw / unit };
+    const lead = best.group.reduce((x, c) => (c.w > x.w ? c : x));
+    // ref: the best-heard line and the moment it started.
+    // Inside a song that is already identified, one clearly heard line of three words or more is enough to place the display
+    // (many lyric lines are short, so their weight alone stays under the general threshold).
+    const strong = best.group.length >= 2 || (lead.c >= 0.8 && lead.k >= 3);
+    return { sec, offset, support: tw / unit, strong, ref: { i: lead.i, w: lead.offset + sec.lines[lead.i].a } };
   }
 
   function learn(song, caps) {
@@ -187,7 +200,7 @@ export function createMatcher(catalog, opts = {}) {
 
   function lock(song, now, manual) {
     const prev = st.song;
-    st.phase = 'locked'; st.song = song; st.manual = !!manual; st.hold = false;
+    st.phase = 'locked'; st.song = song; st.manual = !!manual; st.hold = false; st.heardAt = null;
     // Known lyrics are on screen from the first moment, waiting for a tap or a match to start moving.
     st.anchor = sheet(song); st.mode = st.anchor ? 'karaoke' : 'captions';
     st.lastMatch = now; st.lockedAt = now; st.miss = 0;
@@ -221,11 +234,23 @@ export function createMatcher(catalog, opts = {}) {
   }
 
   function follow(T, words, t0, t1, caps) {
-    const m = matchLines(st.song, T, words, t0);
-    if (m && m.support >= 0.7) {
-      const a = st.anchor;
-      const same = a && !a.paused && a.sec === m.sec && Math.abs(a.offset - m.offset) < 1.5;
-      const offset = same ? a.offset * 0.3 + m.offset * 0.7 : m.offset;
+    const m = matchLines(st.song, T, words, t0, t1);
+    if (m && (m.support >= 0.7 || m.strong)) {
+      const a = st.anchor, h = st.heardAt, L = m.sec.lines;
+      let offset = m.offset;
+      if (m.sec.full && h && h.sec === m.sec && m.ref.i > h.i && m.ref.i - h.i <= 6 && !L.slice(h.i + 1, m.ref.i + 1).some((l) => l.stz)) {
+        // Two heard lines of one stanza give the real tempo. Move the estimated timing part of the way toward it.
+        const r = (m.ref.w - h.w) / (L[m.ref.i].a - L[h.i].a);
+        if (r > 0.5 && r < 2) {
+          pace = Math.min(2.5, Math.max(0.4, pace * Math.min(1.18, Math.max(0.85, Math.sqrt(r)))));
+          applyPace();
+          offset = m.ref.w - L[m.ref.i].a;
+          O.onEvent({ type: 'pace', pace });
+        }
+      } else if (a && !a.paused && a.sec === m.sec && Math.abs(a.offset - m.offset) < 1.5) {
+        offset = a.offset * 0.3 + m.offset * 0.7;
+      }
+      st.heardAt = m.sec.full ? { sec: m.sec, i: m.ref.i, w: m.ref.w } : null;
       st.anchor = { sec: m.sec, offset, base: lineAt(m.sec, t1 - offset) };
       st.mode = 'karaoke'; st.lastMatch = t1; st.miss = 0; st.hold = false;
     } else {
@@ -335,13 +360,6 @@ export function createMatcher(catalog, opts = {}) {
     else {
       const p = position(now);
       idx = (p.waiting ? -1 : p.idx) + (dir < 0 ? -1 : 1);
-      // Web lyrics have estimated timing. A forward tap shows how long the line really took,
-      // so the rest of the song moves halfway toward that pace.
-      if (dir > 0 && a.sec.full && !p.waiting && p.idx + 1 < L.length) {
-        const f = Math.sqrt(Math.min(2, Math.max(0.5, (now - a.offset - L[p.idx].a) / (L[p.idx + 1].a - L[p.idx].a))));
-        const base = L[p.idx + 1].a;
-        for (let i = p.idx + 1; i < L.length; i++) { L[i].a = base + (L[i].a - base) * f; L[i].b = base + (L[i].b - base) * f; }
-      }
     }
     if (idx >= L.length) {
       st.hold = false;
@@ -353,6 +371,16 @@ export function createMatcher(catalog, opts = {}) {
     st.anchor = { sec: a.sec, offset: now - L[idx].a, base: idx };
     st.mode = 'karaoke'; st.hold = true; st.lastMatch = now;
     return true;
+  }
+
+  // Pace buttons. The line on screen keeps its place; only the speed from here on changes.
+  function setPace(mul, now) {
+    const a = st.anchor;
+    const p = a && !a.paused && a.sec.full ? position(now) : null;
+    pace = Math.min(2.5, Math.max(0.4, mul));
+    applyPace();
+    if (p && !p.waiting) { const l = a.sec.lines[p.idx]; a.offset = now - (l.a + p.frac * Math.max(0.6, l.b - l.a)); }
+    return pace;
   }
 
   // Stanza bar: jump to a stanza (the chorus coming back, for example); its first line starts now.
@@ -400,7 +428,7 @@ export function createMatcher(catalog, opts = {}) {
   }
 
   return {
-    feedChunk, verify, tick, position, nudge, jump,
+    feedChunk, verify, tick, position, nudge, jump, setPace,
     select(id, now) { const s = byId.get(id); if (s) lock(s, now, true); },
     release(now) { unlock(now, 'user'); st.ev.clear(); },
     start() { if (st.phase === 'idle') st.phase = 'listening'; },
@@ -409,7 +437,7 @@ export function createMatcher(catalog, opts = {}) {
     get state() {
       return { phase: st.phase, song: pub(st.song), manual: st.manual, mode: st.mode, captions: st.captions, heard: st.heard, conf: st.conf,
         paused: !!(st.anchor && st.anchor.paused), hold: st.hold, hasLines: !!(st.song && mainSec(st.song)),
-        stanzas: (st.song && fullSec(st.song) ? fullSec(st.song).stanzas : []),
+        stanzas: (st.song && fullSec(st.song) ? fullSec(st.song).stanzas : []), pace, full: !!(st.anchor && st.anchor.sec.full),
         known: st.song ? secsOf(st.song).reduce((n, s) => n + s.lines.length, 0) : 0 };
     },
     songs: songs.map((s) => { const m = mainSec(s); return { ...pub(s), lines: m ? m.lines.length : 0 }; }),

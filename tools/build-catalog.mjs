@@ -249,24 +249,26 @@ async function main() {
     if (!best.has(song) || n > best.get(song).n) best.set(song, { n, lines: w.lines });
   }
   for (const [song, w] of best) {
-    const timed = song.sections.filter((s) => s.lines.length >= 3).sort((a, b) => b.lines.length - a.lines.length)[0];
-    let spw = 0.72;
+    // Pace: seconds per word measured on this song's own clips, from line start to line start (gaps included).
+    // Lines on the site are often half-phrases of two or three words, so timing follows the words, with a floor.
+    let spw = 1.0;
+    const timed = song.sections.filter((x) => x.lines.length >= 3).sort((x, y) => y.lines.length - x.lines.length)[0];
     if (timed) {
-      const words = timed.lines.reduce((k, l) => k + l.x.split(' ').length, 0);
-      spw = Math.min(1.1, Math.max(0.45, (timed.lines[timed.lines.length - 1].b - timed.lines[0].a) / words));
+      const words = timed.lines.slice(0, -1).reduce((n, l) => n + l.x.split(' ').length, 0);
+      spw = Math.min(1.5, Math.max(0.5, (timed.lines[timed.lines.length - 1].a - timed.lines[0].a) / words));
     }
     let t = 0, brk = false;
     const lines = [];
     for (const raw of w.lines) {
-      if (!raw) { t += 1.5; brk = true; continue; }
+      if (!raw) { brk = true; continue; }
       const x = raw.replace(/[.,!?"]/g, '').replace(/\s+/g, ' ').trim();
       if (!x) continue;
-      const d = Math.max(1.8, x.split(' ').length * spw);
-      const line = { a: +t.toFixed(2), b: +(t + d).toFixed(2), x };
+      const d = Math.max(2.4, x.split(' ').length * spw);
+      const line = { a: +t.toFixed(2), b: +(t + d - 0.3).toFixed(2), x };
       if (brk && lines.length) line.s = 1; // first line of a stanza
       brk = false;
       lines.push(line);
-      t += d + 0.25;
+      t += d;
     }
     song.sections.unshift({ src: 'web', full: true, lines });
   }

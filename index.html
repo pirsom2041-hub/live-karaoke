@@ -73,6 +73,9 @@
   #stanzas::-webkit-scrollbar { display: none; }
   .sz { flex: none; padding: 9px 14px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line); font-size: 14px; font-weight: 700; color: var(--dim); white-space: nowrap; }
   .sz.on { color: #12091c; background: var(--hot); border-color: transparent; }
+  #pace { display: flex; align-items: center; gap: 12px; }
+  .pc { padding: 7px 13px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line); font-size: 13px; font-weight: 700; color: var(--ink); }
+  .pc:active { background: hsl(var(--h) 80% 40% / .5); }
   #hint { font-size: 12px; font-weight: 600; color: var(--dim); min-height: 16px; text-shadow: 0 1px 4px #000; }
   #stage { cursor: pointer; }
   .list li small.full { color: var(--hot); font-weight: 700; }
@@ -136,7 +139,7 @@
     <div id="conf"><b></b></div>
   </div>
   <div id="stage">
-    <span id="badge">חי</span>
+    <div id="pace"><button class="pc" id="slower" hidden>לאט יותר</button><span id="badge">חי</span><button class="pc" id="faster" hidden>מהר יותר</button></div>
     <div id="hint"></div>
     <p class="ln" id="prev"></p>
     <p class="ln" id="cur"></p>
