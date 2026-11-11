@@ -12,7 +12,8 @@ const diagTopic = /^[a-z0-9-]{12,64}$/.test(params.get('diag') || '') ? params.g
 let diagN = 0;
 
 let bundle = null, matcher = null, audio = null, visuals = null, wake = null;
-let live = false, lastKey = '', lastSung = -1, lastSongId = null, verifying = false;
+let live = false, lastKey = '', lastSung = -1, lastSongId = null, verifying = false, lastVerify = -99;
+const verifyFailed = new Map();
 const net = { state: 'idle', extra: '' };
 
 addEventListener('error', (e) => { $('err').textContent = `${e.message} @${(e.filename || '').split('/').pop()}:${e.lineno}`; });
@@ -119,12 +120,16 @@ async function onChunk(c) {
   if (diagTopic && c.blob) sendDiag(c, hyp);
   // A weak candidate gets a second transcription of the same audio, hinted with that song's lyrics.
   if (!hyp || !c.blob || verifying || matcher.state.phase === 'locked') return;
-  verifying = true;
+  // Each second pass spends transcription quota: at most one every 20 seconds, and a song that just failed waits 45.
+  const t = now();
+  if (t - lastVerify < 20 || t - (verifyFailed.get(hyp.id) || -99) < 45) return;
+  verifying = true; lastVerify = t;
   try {
     const hintText = matcher.hintFor(hyp.id, c.tr.text || '');
     const tr = hintText ? await audio.transcribe(c.blob, hintText) : null;
     if (!tr) return;
     const v = matcher.verify({ t0: c.t0, t1: c.t1, tr }, hyp.id);
+    if (!(v && v.ok)) verifyFailed.set(hyp.id, t);
     audio.setMode(matcher.state.phase === 'locked');
     if (diagTopic) diagNote({ verify: hyp.title, before: hyp.score, after: v && v.score, ok: !!(v && v.ok), text: (tr.text || '').slice(0, 200) });
   } finally { verifying = false; }
