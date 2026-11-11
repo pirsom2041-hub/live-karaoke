@@ -24,8 +24,8 @@ export function grams(n) {
 export function createMatcher(catalog, opts = {}) {
   const O = {
     lineMin: 0.55,     // share of a line's weighted trigrams that must appear in the chunk to count
-    lockChunk: 1.1,    // chunk score (in "typical lines") needed to lock
-    lockEv: 1.5,       // accumulated evidence needed to lock
+    lockChunk: 0.9,    // chunk score (in "typical lines") needed to lock
+    lockEv: 1.2,       // accumulated evidence needed to lock
     lockRatio: 1.8,    // lead over the runner-up
     switchChunk: 1.6,  // chunk score for another song that steals the lock
     decay: 0.6,
@@ -44,26 +44,34 @@ export function createMatcher(catalog, opts = {}) {
   const idfMax = Math.log(1 + Math.max(nDocs, 50));
   const idf = (g) => { const d = df.get(g); return d ? Math.log(1 + nDocs / d) : idfMax; };
   const weigh = (gs) => { let w = 0; for (const g of gs) w += idf(g); return w; };
+  const cont = (g, w, T) => { let c = 0; for (const x of g) if (T.has(x)) c += idf(x); return w ? c / w : 0; };
   const mkLine = (l) => {
     const n = norm(l.x);
     const g = [...grams(n)];
     return { a: l.a, b: l.b, x: l.x, n, g, w: weigh(g), k: n ? n.split(' ').length : 0 };
   };
   const songs = catalog.songs.map((s) => {
-    const tn = norm(s.title);
-    const tg = [...grams(tn)];
+    // A song may carry two names ("a · b"); each is checked on its own.
+    const titles = s.title.split('·').map((t) => { const tn = norm(t); const tg = [...grams(tn)]; return { tg, tw: weigh(tg), tk: tn.split(' ').length, mul: 1 }; }).filter((t) => t.tw);
     return {
-      id: s.id, title: s.title, album: s.album, year: s.year, dur: s.dur,
-      tg, tw: weigh(tg), tk: tn.split(' ').length,
+      id: s.id, title: s.title, album: s.album, year: s.year, dur: s.dur, titles,
       sections: s.sections.map((sec) => ({ src: sec.src, live: !!sec.live, lines: sec.lines.map(mkLine).filter((l) => l.k > 0) })),
       learned: null,
     };
   });
   const byId = new Map(songs.map((s) => [s.id, s]));
+  // A title that is an everyday phrase ("רוצה אותך") shows up inside other songs, so it is weak evidence.
+  const fullText = songs.map((s) => grams(s.sections.flatMap((sec) => sec.lines.map((l) => l.n)).join(' ')));
+  songs.forEach((s, i) => {
+    for (const t of s.titles) {
+      let other = 0;
+      fullText.forEach((G, j) => { if (j !== i && cont(t.tg, t.tw, G) >= 0.85) other++; });
+      t.mul = (t.tk >= 2 ? 1.5 : 0.7) / (1 + 3 * other);
+    }
+  });
   const allW = songs.flatMap((s) => s.sections.flatMap((sec) => sec.lines.map((l) => l.w))).sort((a, b) => a - b);
   const unit = allW.length ? allW[Math.floor(allW.length / 2)] : 60;
 
-  const cont = (g, w, T) => { let c = 0; for (const x of g) if (T.has(x)) c += idf(x); return w ? c / w : 0; };
   const secsOf = (s) => (s.learned ? [...s.sections, s.learned] : s.sections);
 
   // ---- state ----
@@ -78,16 +86,19 @@ export function createMatcher(catalog, opts = {}) {
   function scoreSongs(T, t0) {
     const out = [];
     for (const s of songs) {
-      let sc = 0;
-      const seen = new Set();
+      // Evidence = weight of the distinct trigrams matched through lines that are mostly present.
+      // Counting trigrams once keeps a repeated or near-identical line from scoring twice.
+      const hit = new Set();
       for (const sec of secsOf(s)) for (const l of sec.lines) {
-        if (seen.has(l.n)) continue;
+        if (l.k < 3) continue; // one- and two-word lines turn up in any song
         if (sec.learned && l.b > t0 - 2) continue; // never match a chunk against what it just taught us
-        seen.add(l.n);
-        const c = cont(l.g, l.w, T);
-        if (c >= O.lineMin) sc += l.w * c * c;
+        if (cont(l.g, l.w, T) >= O.lineMin) for (const g of l.g) if (T.has(g)) hit.add(g);
       }
-      if (s.tw && cont(s.tg, s.tw, T) >= 0.85) sc += s.tw * (s.tk >= 2 ? 1.5 : 0.8);
+      let sc = 0;
+      for (const g of hit) sc += idf(g);
+      let bonus = 0;
+      for (const t of s.titles) if (cont(t.tg, t.tw, T) >= 0.85) bonus = Math.max(bonus, t.tw * t.mul);
+      sc += bonus;
       if (sc > 0) out.push([s, sc / unit]);
     }
     return out.sort((a, b) => b[1] - a[1]);
@@ -113,6 +124,7 @@ export function createMatcher(catalog, opts = {}) {
     const cands = [];
     for (const sec of secsOf(song)) sec.lines.forEach((l, i) => {
       if (sec.learned && l.b > t0 - 2) return;
+      if (l.k < 2) return;
       const c = cont(l.g, l.w, T);
       if (c < 0.6) return;
       const loc = words.length ? locate(l, words) : null;

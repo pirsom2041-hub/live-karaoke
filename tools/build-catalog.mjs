@@ -15,7 +15,20 @@ const DEEZER_ARTIST = 12408800;
 const ARTIST_HE = 'ליאת בנאי';
 const ARTIST_RE = /ליאת בנאי|liat banai/i;
 const HE = /[א-ת]/;
-const ALIAS = { 'אבא סליחה': 'אבא סליחה טעיתי', 'את זלזלת': 'אתה זלזלת', 'דואט הפרידה': 'הפרידה' };
+// Same song under two names (verified by shared lyrics in the transcripts): shown with both, " · " separates them.
+const ZILZALTA = 'אתה זלזלת · אין לך מילה', KMO_SHELANU = 'אהבה כמו שלנו · אהבה עיוורת';
+const ALIAS = { 'אבא סליחה': 'אבא סליחה טעיתי', 'דואט הפרידה': 'הפרידה', 'תהיה רצינית': 'תהיה רציני', 'אל תבית': 'אל תביט', 'יסורי אהבה': 'ייסורי אהבה',
+  'את זלזלת': ZILZALTA, 'אתה זלזלת': ZILZALTA, 'אין לך מילה': ZILZALTA, 'אהבה כמו שלנו': KMO_SHELANU, 'אהבה עיוורת': KMO_SHELANU };
+// iTunes lists three albums with transliterated titles. Durations collide across albums, so the mapping is explicit.
+const LATIN = {
+  'ahava iveret': 'אהבה עיוורת', 'ulay tachzor': 'אולי תחזור', 'shakran': 'שקרן', 'ein kamoni': 'אין כמוני', 'bachur chatih': 'בחור חתיך',
+  'rokedet al habar': 'רוקדת על הבר', 'nasi lishkoach': 'נסי לשכוח', 'kchi oto': 'קחי אותו',
+  'layla afel': 'לילה אפל', 'hachafla shel hadance': 'החאפלה של הדאנס', 'chapes acheret': 'חפש אחרת', 'sug b': 'סוג ב', 'al tabit': 'אל תביט',
+  'trufot shel savta': 'תרופות של סבתא', 'ten li': 'תן לי', 'yesh li shamaim': 'יש לי שמיים', 'leehov otach halayla': 'לאוהב אותך הלילה',
+  'lo echpat li': 'לא אכפת לי', 'rak lichyot': 'רק לחיות', 'chashuv li': 'חשוב לי',
+  'ba li alecha': 'בא לי עליך', 'al telech': 'אל תלך', 'kol mila kveda': 'כל מילה כבדה', 'rachok rachok': 'רחוק רחוק', 'kol hanedarim': 'כל הנדרים',
+  'ma asita li': 'מה עשית לי', 'hakesem vehatzchok': 'הקסם והצחוק', 'malkat haleylot': 'מלכת הלילות',
+};
 const HALLU = [/תודה (רבה )?(על|ש)(ה)?צפי/, /כתוביות/, /תרגום:/, /תמלול:/, /amara/i, /subtitles/i, /^תודה\.?$/, /^תודה רבה\.?$/];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -122,7 +135,19 @@ function toLines(tr) {
     }
     lines.push({ a: s.start, b: s.end, x: text });
   }
-  return lines.map((l) => ({ a: +l.a.toFixed(2), b: +l.b.toFixed(2), x: l.x.replace(/[.,!?"]/g, '').replace(/\s+/g, ' ').trim() })).filter((l) => l.x.length > 1);
+  const clean = lines.map((l) => ({ a: +l.a.toFixed(2), b: +l.b.toFixed(2), x: l.x.replace(/[.,!?"]/g, '').replace(/\s+/g, ' ').trim() })).filter((l) => l.x.length > 1);
+  // One- and two-word fragments match anything; fold them into the neighbouring line.
+  const wc = (l) => l.x.split(' ').length;
+  const out = [];
+  for (let i = 0; i < clean.length; i++) {
+    const l = clean[i], prev = out[out.length - 1], next = clean[i + 1];
+    if (wc(l) <= 2) {
+      if (prev && l.a - prev.b <= 1.5 && wc(prev) <= 7) { prev.x += ' ' + l.x; prev.b = l.b; continue; }
+      if (next && next.a - l.b <= 1.5) { clean[i + 1] = { a: l.a, b: next.b, x: l.x + ' ' + next.x }; continue; }
+    }
+    out.push({ ...l });
+  }
+  return out;
 }
 
 async function main() {
@@ -135,15 +160,18 @@ async function main() {
   const it = await listItunes();
   console.log(`  Deezer: ${dz.length} tracks, iTunes: ${it.length} tracks`);
 
-  // Give iTunes tracks with transliterated titles the Hebrew title of the Deezer track with the same duration.
   for (const t of it) {
     t.title = cleanTitle(t.rawTitle);
     if (!HE.test(t.title)) {
-      const m = dz.filter((d) => Math.abs(d.dur - t.dur) <= 1).sort((a, b) => Math.abs(a.dur - t.dur) - Math.abs(b.dur - t.dur))[0];
-      if (m) t.title = cleanTitle(m.rawTitle);
+      const he = LATIN[t.title.toLowerCase()];
+      if (he) t.title = cleanTitle(he); else console.warn('  no Hebrew title for', t.rawTitle);
     }
   }
   for (const t of dz) t.title = cleanTitle(t.rawTitle);
+  for (const t of [...dz, ...it]) {
+    // Distributor metadata: the 313-second track sold as "אהבה אבודה" on the best-of album is "מחפשת את הדרך".
+    if (t.title === 'אהבה אבודה' && t.dur >= 310) t.title = 'מחפשת את הדרך';
+  }
 
   // Group into songs, then into distinct recordings (same source + same duration = same recording on another album).
   const songs = new Map();

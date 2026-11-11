@@ -6,6 +6,10 @@ export function createAudio({ getKey, model, onChunk, onStatus }) {
   let stream = null, ctx = null, analyser = null, freq = null;
   let running = false, timer = 0, inflight = 0, pausedUntil = 0, demo = false;
   let hop = 6, len = 10;
+  // Each Whisper model has its own free quota. When the main one is exhausted, use the other for ten minutes.
+  const ALT = 'whisper-large-v3-turbo';
+  let altUntil = 0;
+  const pickModel = () => (now() < altUntil ? ALT : model());
   const hist = [];
   let lastBeat = 0, beatLevel = 0;
   const net = { ok: 0, fail: 0, lastMs: 0, state: 'idle' };
@@ -70,7 +74,8 @@ export function createAudio({ getKey, model, onChunk, onStatus }) {
       const fd = new FormData();
       const ext = blob.type.includes('mp4') ? 'm4a' : 'webm';
       fd.append('file', blob, `chunk.${ext}`);
-      fd.append('model', model());
+      const used = pickModel();
+      fd.append('model', used);
       fd.append('language', 'he');
       fd.append('response_format', 'verbose_json');
       fd.append('temperature', '0');
@@ -81,6 +86,7 @@ export function createAudio({ getKey, model, onChunk, onStatus }) {
       const r = await fetch(GROQ_URL, { method: 'POST', headers: { authorization: `Bearer ${key}` }, body: fd, signal: ctl.signal });
       clearTimeout(to);
       if (r.status === 429) {
+        if (used !== ALT) { altUntil = now() + 600; return; }
         const wait = Number(r.headers.get('retry-after')) || 20;
         pausedUntil = now() + Math.min(wait, 120);
         status('limited', Math.round(wait));

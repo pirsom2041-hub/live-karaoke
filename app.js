@@ -139,7 +139,7 @@ function render(t) {
     const el = $('songTitle');
     el.classList.toggle('idle', !locked);
     el.textContent = locked ? s.song.title : 'מקשיבה ומחפשת את השיר...';
-    $('songMeta').textContent = locked ? [s.song.album, s.song.year || ''].filter(Boolean).join(' · ') : '';
+    $('songMeta').textContent = locked ? (s.song.album || '') : '';
     $('torchT').textContent = locked ? s.song.title : 'ליאת בנאי';
     $('other').classList.toggle('on', locked);
   }
@@ -246,21 +246,24 @@ async function shareLog() {
 
 // ---------- demo (no microphone): replays a catalog song through the matcher ----------
 function startDemo() {
-  const song = bundle.catalog.songs.find((s) => s.sections.some((x) => x.lines.length >= 5));
+  const want = params.get('demo');
+  const song = bundle.catalog.songs.find((s) => s.title.includes(want) && s.sections.length) || bundle.catalog.songs.find((s) => s.sections.some((x) => x.lines.length >= 6));
   if (!song) return;
-  const sec = song.sections.find((x) => x.lines.length >= 5);
+  const sec = [...song.sections].sort((a, b) => b.lines.length - a.lines.length)[0];
   audio.startDemo();
   goLive();
-  const t0 = now();
-  const secT = () => now() - t0 + sec.lines[0].a - 1;
-  setInterval(() => {
-    const end = secT(), from = end - 8, tNow = now();
-    const lines = sec.lines.filter((l) => l.a >= from && l.b <= end);
-    const segments = lines.map((l) => ({ start: l.a - from, end: l.b - from, text: l.x, no_speech_prob: 0, avg_logprob: -0.2, compression_ratio: 1 }));
-    const words = lines.flatMap((l) => {
-      const ws = l.x.split(/\s+/), d = (l.b - l.a) / ws.length;
-      return ws.map((w, i) => ({ word: w, start: l.a - from + i * d, end: l.a - from + (i + 1) * d }));
+  // The song "started" nine seconds ago; wall time of a line = w0 + its time in the clip.
+  const w0 = now() - 9 - sec.lines[0].a;
+  const feed = (end) => {
+    const from = end - 10;
+    const lines = sec.lines.filter((l) => w0 + l.a >= from && w0 + l.b <= end);
+    const segments = lines.map((l) => ({ start: w0 + l.a - from, end: w0 + l.b - from, text: l.x, no_speech_prob: 0, avg_logprob: -0.2, compression_ratio: 1 }));
+    const words = segments.flatMap((g) => {
+      const ws = g.text.split(/\s+/), d = (g.end - g.start) / ws.length;
+      return ws.map((w, k) => ({ word: w, start: g.start + k * d, end: g.start + (k + 1) * d }));
     });
-    onChunk({ t0: tNow - 8, t1: tNow, tr: { segments, words } });
-  }, 2500);
+    onChunk({ t0: from, t1: end, tr: { segments, words } });
+  };
+  feed(now() - 4); feed(now());
+  setInterval(() => feed(now()), 3000);
 }

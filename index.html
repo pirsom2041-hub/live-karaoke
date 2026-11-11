@@ -34,7 +34,7 @@
   #startMsg.bad { color: #ff9a9a; font-weight: 700; }
 
   /* live */
-  #live { grid-template-rows: auto auto 1fr auto; gap: 10px; }
+  #live { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto 1fr auto; gap: 10px; }
   .top { display: flex; align-items: center; gap: 8px; }
   #chip { display: inline-flex; align-items: center; gap: 8px; padding: 7px 12px; border-radius: 999px; background: var(--panel);
     border: 1px solid var(--line); font-size: 13px; font-weight: 700; white-space: nowrap; }
@@ -70,12 +70,12 @@
   #next2 { font-size: clamp(16px, 4.6vw, 24px); color: var(--faint); min-height: 1.2em; }
 
   .foot { display: flex; align-items: center; gap: 10px; }
-  #heard { flex: 1; min-width: 0; font-size: 12px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: start; }
+  #heard { flex: 1; min-width: 0; font-size: 12px; color: var(--dim); text-shadow: 0 1px 4px #000, 0 0 10px #000; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: start; }
   #other { display: none; }
   #other.on { display: block; }
 
   /* sheets */
-  .sheet { position: fixed; inset: 0; z-index: 5; display: none; grid-template-rows: auto auto 1fr auto; gap: 10px; background: rgba(8, 6, 14, .93);
+  .sheet { position: fixed; inset: 0; z-index: 5; display: none; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto 1fr auto; gap: 10px; background: rgba(8, 6, 14, .93);
     backdrop-filter: blur(14px); padding: max(16px, env(safe-area-inset-top)) 18px max(16px, env(safe-area-inset-bottom)); }
   .sheet.on { display: grid; }
   .sheet header { display: flex; align-items: center; justify-content: space-between; }
