@@ -5,7 +5,7 @@ const now = () => performance.now() / 1000;
 export function createAudio({ getKey, model, onChunk, onStatus }) {
   let stream = null, ctx = null, analyser = null, freq = null;
   let running = false, timer = 0, inflight = 0, pausedUntil = 0, demo = false;
-  let hop = 6, len = 10;
+  let hop = 6, len = 8; // searching: shorter overlapping chunks, so the first match comes sooner
   // Each Whisper model has its own free quota. When the main one is exhausted, use the other for ten minutes.
   const ALT = 'whisper-large-v3-turbo';
   let altUntil = 0;
@@ -127,7 +127,7 @@ export function createAudio({ getKey, model, onChunk, onStatus }) {
 
   return {
     start, startDemo, stop, levels,
-    setMode(locked) { hop = locked ? 10 : 6; len = 10; },
+    setMode(locked) { hop = locked ? 10 : 6; len = locked ? 10 : 8; },
     get net() { return net; },
     get running() { return running; },
   };

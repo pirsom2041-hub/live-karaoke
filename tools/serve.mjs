@@ -1,7 +1,7 @@
-// Local helper server: key page, optional lyrics paste page, and the app itself for desktop testing.
+// Local helper server: key page and the app itself for desktop testing.
 // Binds to localhost only.
 import http from 'node:http';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, appendFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -9,7 +9,6 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 5173;
 const SECRET = path.join(ROOT, '.secret.json');
 const CATALOG = path.join(ROOT, 'catalog.json');
-const PASTES = path.join(ROOT, '.cache', 'pastes');
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.webmanifest': 'application/manifest+json',
@@ -52,16 +51,14 @@ const server = http.createServer(async (req, res) => {
       const c = await readJson(CATALOG, { songs: [] });
       return json(res, 200, { groqKey: s.groqKey || '', catalog: c });
     }
-    if (p === '/api/paste' && req.method === 'POST') {
-      const { text } = JSON.parse(await readBody(req) || '{}');
-      if (!text || text.length < 40) return json(res, 400, { ok: false });
-      await mkdir(PASTES, { recursive: true });
-      const name = `${Date.now()}.txt`;
-      await writeFile(path.join(PASTES, name), text);
-      return json(res, 200, { ok: true, name });
+    if (p === '/api/report' && req.method === 'POST') { // end-to-end test hook (?auto=1)
+      await mkdir(path.join(ROOT, '.cache', 'e2e'), { recursive: true });
+      await appendFile(path.join(ROOT, '.cache', 'e2e', 'report.jsonl'), `${await readBody(req)}
+`);
+      return json(res, 200, { ok: true });
     }
-    if (p === '/key' || p === '/paste') {
-      return send(res, 200, MIME['.html'], await readFile(path.join(ROOT, 'tools', `${p.slice(1)}.html`)));
+    if (p === '/key') {
+      return send(res, 200, MIME['.html'], await readFile(path.join(ROOT, 'tools', 'key.html')));
     }
     const rel = p === '/' ? 'index.html' : p.slice(1);
     if (!PUBLIC.has(rel)) return send(res, 404, 'text/plain', 'not found');

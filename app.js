@@ -46,6 +46,14 @@ async function boot() {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
   if (demo) startDemo();
+  // End-to-end test hook, local server only: start without a tap and report state.
+  if (params.has('auto') && location.hostname === 'localhost') {
+    await start();
+    setInterval(() => {
+      const s = matcher.state;
+      fetch('/api/report', { method: 'POST', body: JSON.stringify({ t: Math.round(now()), phase: s.phase, song: s.song && s.song.id, mode: s.mode, conf: +s.conf.toFixed(2), heardChars: s.heard.length, known: s.known, net: audio.net }) }).catch(() => {});
+    }, 3000);
+  }
 }
 
 function wire() {
