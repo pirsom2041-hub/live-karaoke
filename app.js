@@ -72,10 +72,14 @@ function wire() {
     const li = e.target.closest('li[data-id]');
     if (!li) return;
     matcher.select(li.dataset.id, now());
-    audio.setMode(true);
     $('sheetSongs').classList.remove('on');
   };
-  $('other').onclick = () => { matcher.release(now()); audio.setMode(false); };
+  $('other').onclick = () => { matcher.release(now()); };
+  // Stanza bar: one tap jumps to a stanza (the chorus coming back, for example) and starts it now.
+  $('stanzas').onclick = (e) => {
+    const b = e.target.closest('button[data-k]');
+    if (b && matcher.jump(+b.dataset.k, now())) { lastKey = ''; if (navigator.vibrate) navigator.vibrate(15); }
+  };
   // Tap the lyrics: start the waiting line now, or jump to the next one. Tap the line above: go back one.
   $('stage').onclick = (e) => {
     if (matcher.nudge(e.target.closest('#prev') ? -1 : 1, now())) { lastKey = ''; if (navigator.vibrate) navigator.vibrate(15); }
@@ -116,7 +120,6 @@ async function keepAwake() {
 
 async function onChunk(c) {
   const hyp = matcher.feedChunk(c);
-  audio.setMode(matcher.state.phase === 'locked');
   if (diagTopic && c.blob) sendDiag(c, hyp);
   // A weak candidate gets a second transcription of the same audio, hinted with that song's lyrics.
   if (!hyp || !c.blob || verifying || matcher.state.phase === 'locked') return;
@@ -130,7 +133,6 @@ async function onChunk(c) {
     if (!tr) return;
     const v = matcher.verify({ t0: c.t0, t1: c.t1, tr }, hyp.id);
     if (!(v && v.ok)) verifyFailed.set(hyp.id, t);
-    audio.setMode(matcher.state.phase === 'locked');
     if (diagTopic) diagNote({ verify: hyp.title, before: hyp.score, after: v && v.score, ok: !!(v && v.ok), text: (tr.text || '').slice(0, 200) });
   } finally { verifying = false; }
 }
@@ -172,7 +174,12 @@ function frame() {
   const t = now();
   const lv = audio && audio.running ? audio.levels() : idle(t);
   visuals.draw(t, lv);
-  if (live && matcher) { matcher.tick(t); render(t); }
+  if (live && matcher) {
+    matcher.tick(t);
+    const s = matcher.state;
+    audio.setMode(s.phase !== 'locked' ? 'search' : s.paused ? 'waiting' : 'locked');
+    render(t);
+  }
 }
 
 const CHIP = { listening: 'מקשיבה', offline: 'אין רשת', slow: 'רשת איטית', limited: 'הפסקה קצרה', error: 'תקלה', idle: 'מקשיבה' };
@@ -194,6 +201,7 @@ function render(t) {
     $('songMeta').textContent = locked ? (s.song.album || '') : '';
     $('torchT').textContent = locked ? s.song.title : 'ליאת בנאי';
     $('other').classList.toggle('on', locked);
+    buildStanzas(locked ? s.stanzas : []);
   }
   $('conf').firstElementChild.style.width = `${Math.round(s.conf * 100)}%`;
   setText('heard', s.heard ? `שמעתי: ${s.heard}` : '');
@@ -201,15 +209,17 @@ function render(t) {
   const p = locked && s.mode === 'karaoke' ? matcher.position(t) : null;
   if (p) {
     const L = p.lines, i = p.idx;
-    const key = `k|${songId}|${i}|${L.length}|${p.paused ? 'p' : 'r'}|${p.end ? 'e' : ''}`;
+    const key = `k|${songId}|${i}|${L.length}|${p.paused ? 'p' : 'r'}|${p.end ? 'e' : ''}|${p.wait ? 'w' : ''}`;
     if (key !== lastKey) {
       lastKey = key; lastSung = -1;
       setBadge(p.paused ? 'מילים' : 'קריוקי', true);
-      setText('hint', p.end ? 'סוף המילים. הקשה מחזירה להתחלה' : p.paused ? 'הקשה על המסך ברגע שהיא מתחילה את השורה הזאת' : 'הקשה: לשורה הבאה · הקשה על השורה שמעל: חזרה');
+      setText('hint', p.end ? 'סוף המילים. הקשה מחזירה להתחלה, או בחירת בית למטה' : p.wait ? 'מחכה להמשך. הקשה כשהיא מתחילה את השורה, או בחירת בית למטה' : p.paused ? 'הקשה על המסך ברגע שהיא מתחילה את השורה הזאת' : 'הקשה: לשורה הבאה · הקשה על השורה שמעל: חזרה');
       $('prev').textContent = i > 0 ? L[i - 1].x : '';
       setCurrent(L[i].x, false);
       $('next1').textContent = L[i + 1] ? L[i + 1].x : '';
       $('next2').textContent = L[i + 2] ? L[i + 2].x : '';
+      $('next3').textContent = L[i + 3] ? L[i + 3].x : '';
+      markStanza(s.stanzas, i);
     }
     const spans = $('cur').children;
     const sung = p.waiting ? 0 : Math.min(spans.length, Math.ceil(p.frac * spans.length + 0.001));
@@ -227,6 +237,7 @@ function render(t) {
       $('prev').textContent = n > 1 ? c[n - 2].x : '';
       setCurrent(n ? c[n - 1].x : '', true);
       $('next1').textContent = '';
+      $('next3').textContent = '';
       $('next2').textContent = n ? '' : 'המילים יופיעו כאן ברגע שהיא תתחיל לשיר';
     }
   }
@@ -252,6 +263,30 @@ function setCurrent(text, caption) {
     if (i < words.length - 1) cur.append(' ');
   });
   cur.classList.remove('swap'); void cur.offsetWidth; cur.classList.add('swap');
+}
+
+function buildStanzas(list) {
+  const el = $('stanzas');
+  el.textContent = '';
+  if (!list || list.length < 2) return;
+  list.forEach((z, k) => {
+    const b = document.createElement('button');
+    b.className = 'sz'; b.dataset.k = k; b.textContent = z.label;
+    el.append(b);
+  });
+}
+
+function markStanza(list, idx) {
+  let cur = -1;
+  (list || []).forEach((z, k) => { if (z.i <= idx) cur = k; });
+  const kids = $('stanzas').children;
+  for (let k = 0; k < kids.length; k++) {
+    const on = k === cur;
+    if (kids[k].classList.contains('on') !== on) {
+      kids[k].classList.toggle('on', on);
+      if (on) kids[k].scrollIntoView({ block: 'nearest', inline: 'center' });
+    }
+  }
 }
 
 // ---------- sheets ----------

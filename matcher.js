@@ -50,14 +50,19 @@ export function createMatcher(catalog, opts = {}) {
   const mkLine = (l) => {
     const n = norm(l.x);
     const g = [...grams(n)];
-    return { a: l.a, b: l.b, x: l.x, n, g, w: weigh(g), k: n ? n.split(' ').length : 0 };
+    return { a: l.a, b: l.b, x: l.x, n, g, w: weigh(g), k: n ? n.split(' ').length : 0, stz: !!l.s };
   };
   const songs = catalog.songs.map((s) => {
     // A song may carry two names ("a · b"); each is checked on its own.
     const titles = s.title.split('·').map((t) => { const tn = norm(t); const tg = [...grams(tn)]; return { tg, tw: weigh(tg), tk: tn.split(' ').length, mul: 1 }; }).filter((t) => t.tw);
     return {
       id: s.id, title: s.title, album: s.album, year: s.year, dur: s.dur, titles,
-      sections: s.sections.map((sec) => ({ src: sec.src, live: !!sec.live, full: !!sec.full, lines: sec.lines.map(mkLine).filter((l) => l.k > 0) })),
+      sections: s.sections.map((sec) => {
+        const lines = sec.lines.map(mkLine).filter((l) => l.k > 0);
+        // Stanza starts (web lyrics only). The display runs one stanza at a time.
+        const stanzas = sec.full ? lines.map((l, i) => (i === 0 || l.stz ? { i, label: l.x.split(' ').slice(0, 3).join(' ') } : null)).filter(Boolean) : [];
+        return { src: sec.src, live: !!sec.live, full: !!sec.full, lines, stanzas };
+      }),
       learned: null,
     };
   });
@@ -99,6 +104,7 @@ export function createMatcher(catalog, opts = {}) {
     return best;
   };
   const sheet = (song) => { const sec = mainSec(song); return sec ? { sec, idx: 0, paused: true } : null; };
+  const lineAt = (sec, t) => { let idx = 0; for (let i = 0; i < sec.lines.length; i++) if (sec.lines[i].a <= t + 0.2) idx = i; else break; return idx; };
 
   function scoreSongs(T, t0) {
     const out = [];
@@ -219,7 +225,8 @@ export function createMatcher(catalog, opts = {}) {
     if (m && m.support >= 0.7) {
       const a = st.anchor;
       const same = a && !a.paused && a.sec === m.sec && Math.abs(a.offset - m.offset) < 1.5;
-      st.anchor = { sec: m.sec, offset: same ? a.offset * 0.3 + m.offset * 0.7 : m.offset };
+      const offset = same ? a.offset * 0.3 + m.offset * 0.7 : m.offset;
+      st.anchor = { sec: m.sec, offset, base: lineAt(m.sec, t1 - offset) };
       st.mode = 'karaoke'; st.lastMatch = t1; st.miss = 0; st.hold = false;
     } else {
       st.miss++; // known lines keep running at their own pace; they stop only when the section ends (tick)
@@ -302,7 +309,14 @@ export function createMatcher(catalog, opts = {}) {
     }
     if (!sec && st.song === song && st.anchor) {
       sec = st.anchor.sec;
-      start = st.anchor.paused ? st.anchor.idx : Math.max(0, position(now).idx - 3);
+      const L = sec.lines, out = [];
+      const add = (i, n) => { for (let j = i; j < Math.min(L.length, i + n) && out.length < 40; j++) out.push(...L[j].x.split(' ').slice(0, 40 - out.length)); };
+      const p = position(now);
+      // The lines she is about to sing, then the opening line of every other stanza: she may go back to the chorus.
+      add(st.anchor.paused ? p.idx : Math.max(0, p.idx - 1), st.anchor.paused ? 2 : 4);
+      for (const z of sec.stanzas || []) if (Math.abs(z.i - p.idx) > 1) add(z.i, 1);
+      if (out.length) return out.join(' ');
+      start = p.idx;
     }
     if (!sec) { sec = mainSec(song) || secs[0]; start = 0; }
     const out = [];
@@ -336,7 +350,18 @@ export function createMatcher(catalog, opts = {}) {
       return true;
     }
     idx = Math.max(0, idx);
-    st.anchor = { sec: a.sec, offset: now - L[idx].a };
+    st.anchor = { sec: a.sec, offset: now - L[idx].a, base: idx };
+    st.mode = 'karaoke'; st.hold = true; st.lastMatch = now;
+    return true;
+  }
+
+  // Stanza bar: jump to a stanza (the chorus coming back, for example); its first line starts now.
+  function jump(k, now) {
+    if (st.phase !== 'locked') return false;
+    const sec = fullSec(st.song);
+    const z = sec && sec.stanzas[k];
+    if (!z) return false;
+    st.anchor = { sec, offset: now - sec.lines[z.i].a, base: z.i };
     st.mode = 'karaoke'; st.hold = true; st.lastMatch = now;
     return true;
   }
@@ -350,6 +375,11 @@ export function createMatcher(catalog, opts = {}) {
         st.hold = false;
         if (f) st.anchor = { sec: f, idx: f.lines.length - 1, paused: true, end: true }; // real lyrics stay on screen
         else { st.mode = 'captions'; st.anchor = null; }
+      } else if (!p.paused && !p.waiting && st.anchor.sec.full && p.idx > st.anchor.base && p.lines[p.idx].stz) {
+        // End of a stanza. There may be an instrumental break here, and the estimated timing cannot know.
+        // Wait on the next stanza until she is heard singing it, or the user taps.
+        st.anchor = { sec: st.anchor.sec, idx: p.idx, paused: true, wait: true };
+        st.hold = false;
       }
     }
   }
@@ -359,7 +389,7 @@ export function createMatcher(catalog, opts = {}) {
     const a = st.anchor;
     if (!a) return null;
     const L = a.sec.lines;
-    if (a.paused) return { lines: L, idx: a.idx, frac: 0, ended: false, waiting: true, paused: true, end: !!a.end };
+    if (a.paused) return { lines: L, idx: a.idx, frac: 0, ended: false, waiting: true, paused: true, end: !!a.end, wait: !!a.wait };
     const t = now - a.offset;
     let idx = -1;
     for (let i = 0; i < L.length; i++) if (L[i].a <= t + 0.2) idx = i; else break;
@@ -370,7 +400,7 @@ export function createMatcher(catalog, opts = {}) {
   }
 
   return {
-    feedChunk, verify, tick, position, nudge,
+    feedChunk, verify, tick, position, nudge, jump,
     select(id, now) { const s = byId.get(id); if (s) lock(s, now, true); },
     release(now) { unlock(now, 'user'); st.ev.clear(); },
     start() { if (st.phase === 'idle') st.phase = 'listening'; },
@@ -379,6 +409,7 @@ export function createMatcher(catalog, opts = {}) {
     get state() {
       return { phase: st.phase, song: pub(st.song), manual: st.manual, mode: st.mode, captions: st.captions, heard: st.heard, conf: st.conf,
         paused: !!(st.anchor && st.anchor.paused), hold: st.hold, hasLines: !!(st.song && mainSec(st.song)),
+        stanzas: (st.song && fullSec(st.song) ? fullSec(st.song).stanzas : []),
         known: st.song ? secsOf(st.song).reduce((n, s) => n + s.lines.length, 0) : 0 };
     },
     songs: songs.map((s) => { const m = mainSec(s); return { ...pub(s), lines: m ? m.lines.length : 0 }; }),

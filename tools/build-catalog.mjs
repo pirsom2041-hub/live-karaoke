@@ -255,14 +255,17 @@ async function main() {
       const words = timed.lines.reduce((k, l) => k + l.x.split(' ').length, 0);
       spw = Math.min(1.1, Math.max(0.45, (timed.lines[timed.lines.length - 1].b - timed.lines[0].a) / words));
     }
-    let t = 0;
+    let t = 0, brk = false;
     const lines = [];
     for (const raw of w.lines) {
-      if (!raw) { t += 1.5; continue; }
+      if (!raw) { t += 1.5; brk = true; continue; }
       const x = raw.replace(/[.,!?"]/g, '').replace(/\s+/g, ' ').trim();
       if (!x) continue;
       const d = Math.max(1.8, x.split(' ').length * spw);
-      lines.push({ a: +t.toFixed(2), b: +(t + d).toFixed(2), x });
+      const line = { a: +t.toFixed(2), b: +(t + d).toFixed(2), x };
+      if (brk && lines.length) line.s = 1; // first line of a stanza
+      brk = false;
+      lines.push(line);
       t += d + 0.25;
     }
     song.sections.unshift({ src: 'web', full: true, lines });

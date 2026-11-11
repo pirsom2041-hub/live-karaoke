@@ -157,8 +157,11 @@ export function createAudio({ getKey, model, onChunk, onStatus, hint = null }) {
 
   return {
     start, startDemo, stop, levels, transcribe,
-    // Locked on a song: chunks back to back, each sent with that song's lyrics as a hint.
-    setMode(locked) { hop = 10; len = locked ? 12 : 16; },
+    // search: long chunks. locked: chunks back to back, hinted with the song's lyrics.
+    // waiting: she is expected to start a stanza, so shorter and more frequent chunks catch it sooner.
+    setMode(mode) {
+      if (mode === 'waiting') { hop = 6; len = 9; } else if (mode === 'locked') { hop = 10; len = 12; } else { hop = 10; len = 16; }
+    },
     get net() { return net; },
     get running() { return running; },
   };
