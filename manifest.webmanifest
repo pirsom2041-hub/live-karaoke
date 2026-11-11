@@ -1,0 +1,13 @@
+{
+  "name": "קריוקי חי",
+  "short_name": "קריוקי חי",
+  "lang": "he",
+  "dir": "rtl",
+  "start_url": ".",
+  "scope": ".",
+  "display": "fullscreen",
+  "orientation": "portrait",
+  "background_color": "#08060e",
+  "theme_color": "#08060e",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#08060e">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg">
+<title>קריוקי חי</title>
+<style>
+  :root { --h: 315; --bg: #08060e; --ink: #f7f2ff; --dim: rgba(247, 242, 255, .5); --faint: rgba(247, 242, 255, .28);
+    --hot: hsl(var(--h) 100% 72%); --hot2: hsl(calc(var(--h) + 40) 100% 70%); --panel: rgba(18, 14, 30, .78); --line: rgba(247, 242, 255, .14); }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; margin: 0; overflow: hidden; background: var(--bg); color: var(--ink);
+    font-family: "Noto Sans Hebrew", "Rubik", "Heebo", system-ui, "Segoe UI", Arial, sans-serif; overscroll-behavior: none; user-select: none; }
+  button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+  #fx { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; }
+  .screen { position: fixed; inset: 0; z-index: 1; display: none;
+    padding: max(14px, env(safe-area-inset-top)) max(18px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left)); }
+  .screen.on { display: grid; }
+
+  /* start */
+  #start { place-items: center; text-align: center; }
+  #start .box { display: grid; gap: 18px; justify-items: center; }
+  #start .kicker { letter-spacing: .28em; font-size: 13px; font-weight: 700; color: var(--hot); }
+  #start h1 { margin: 0; font-size: clamp(46px, 15vw, 92px); line-height: .95; font-weight: 900; text-wrap: balance;
+    text-shadow: 0 0 34px hsl(var(--h) 100% 60% / .55); }
+  #start .who { font-size: 20px; color: var(--dim); font-weight: 600; }
+  #go { margin-top: 14px; padding: 20px 44px; font-size: 22px; font-weight: 900; color: #12091c; border-radius: 999px;
+    background: linear-gradient(100deg, var(--hot), var(--hot2)); box-shadow: 0 0 44px hsl(var(--h) 100% 60% / .6); }
+  #go:disabled { opacity: .45; box-shadow: none; }
+  #go:active { transform: scale(.97); }
+  #count, #startMsg { font-size: 14px; color: var(--dim); min-height: 20px; }
+  #startMsg.bad { color: #ff9a9a; font-weight: 700; }
+
+  /* live */
+  #live { grid-template-rows: auto auto 1fr auto; gap: 10px; }
+  .top { display: flex; align-items: center; gap: 8px; }
+  #chip { display: inline-flex; align-items: center; gap: 8px; padding: 7px 12px; border-radius: 999px; background: var(--panel);
+    border: 1px solid var(--line); font-size: 13px; font-weight: 700; white-space: nowrap; }
+  #chip i { width: 9px; height: 9px; border-radius: 50%; background: var(--hot); box-shadow: 0 0 10px var(--hot); animation: blink 1.2s ease-in-out infinite; }
+  #chip.warn i { background: #ffb347; box-shadow: 0 0 10px #ffb347; }
+  @keyframes blink { 50% { opacity: .3; transform: scale(.7); } }
+  .top .sp { flex: 1; }
+  .tb { padding: 8px 13px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line); font-size: 14px; font-weight: 700; }
+  .tb:active { background: hsl(var(--h) 80% 40% / .5); }
+
+  #songbox { min-height: 76px; text-align: center; display: grid; align-content: center; gap: 4px; }
+  #songTitle { font-size: clamp(24px, 7.4vw, 42px); font-weight: 900; line-height: 1.1; color: var(--hot); text-wrap: balance;
+    text-shadow: 0 0 26px hsl(var(--h) 100% 60% / .7); }
+  #songTitle.idle { color: var(--dim); text-shadow: none; font-weight: 700; font-size: clamp(18px, 5.4vw, 26px); }
+  #songTitle.pop { animation: pop .9s cubic-bezier(.2, 1.5, .4, 1); }
+  @keyframes pop { 0% { transform: scale(.4); opacity: 0; filter: blur(10px); } 60% { transform: scale(1.12); opacity: 1; filter: none; } 100% { transform: scale(1); } }
+  #songMeta { font-size: 13px; color: var(--dim); font-weight: 600; min-height: 17px; }
+  #conf { justify-self: center; width: 120px; height: 3px; border-radius: 3px; background: var(--line); overflow: hidden; }
+  #conf b { display: block; height: 100%; width: 0; background: var(--hot); transition: width .6s; }
+
+  #stage { display: grid; align-content: center; justify-items: center; gap: clamp(10px, 2.4vh, 22px); text-align: center; min-height: 0; overflow: hidden; }
+  #badge { font-size: 11px; font-weight: 800; letter-spacing: .2em; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--dim); }
+  #badge.k { color: #12091c; background: var(--hot); border-color: transparent; }
+  .ln { margin: 0; font-weight: 800; line-height: 1.18; text-wrap: balance; transition: opacity .35s; max-width: 100%; }
+  #prev { font-size: clamp(16px, 4.6vw, 24px); color: var(--faint); min-height: 1.2em; }
+  #cur { font-size: clamp(32px, 10.2vw, 62px); font-weight: 900; color: var(--ink); text-shadow: 0 2px 22px rgba(0, 0, 0, .7); min-height: 1.2em; }
+  #cur span { transition: color .18s, text-shadow .18s; }
+  #cur span.sung { color: var(--hot); text-shadow: 0 0 22px hsl(var(--h) 100% 60% / .9); }
+  #cur.cap { font-size: clamp(26px, 8vw, 46px); }
+  #cur.swap { animation: rise .32s ease-out; }
+  @keyframes rise { from { transform: translateY(22px); opacity: .2; } to { transform: none; opacity: 1; } }
+  #next1 { font-size: clamp(20px, 6vw, 32px); color: var(--dim); min-height: 1.2em; }
+  #next2 { font-size: clamp(16px, 4.6vw, 24px); color: var(--faint); min-height: 1.2em; }
+
+  .foot { display: flex; align-items: center; gap: 10px; }
+  #heard { flex: 1; min-width: 0; font-size: 12px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: start; }
+  #other { display: none; }
+  #other.on { display: block; }
+
+  /* sheets */
+  .sheet { position: fixed; inset: 0; z-index: 5; display: none; grid-template-rows: auto auto 1fr auto; gap: 10px; background: rgba(8, 6, 14, .93);
+    backdrop-filter: blur(14px); padding: max(16px, env(safe-area-inset-top)) 18px max(16px, env(safe-area-inset-bottom)); }
+  .sheet.on { display: grid; }
+  .sheet header { display: flex; align-items: center; justify-content: space-between; }
+  .sheet h2 { margin: 0; font-size: 24px; font-weight: 900; }
+  .sheet input { width: 100%; padding: 13px 16px; font: inherit; font-size: 17px; color: var(--ink); background: rgba(255, 255, 255, .07);
+    border: 1px solid var(--line); border-radius: 12px; user-select: text; }
+  .list { overflow-y: auto; margin: 0; padding: 0; list-style: none; -webkit-overflow-scrolling: touch; }
+  .list li { padding: 13px 4px; border-bottom: 1px solid var(--line); display: flex; align-items: baseline; gap: 10px; }
+  .list li b { font-size: 18px; font-weight: 800; }
+  .list li small { color: var(--dim); font-size: 13px; }
+  .list li time { color: var(--hot); font-weight: 800; font-variant-numeric: tabular-nums; font-size: 15px; }
+  .list .empty { color: var(--dim); border: 0; padding: 30px 4px; }
+  .row { display: flex; gap: 10px; align-items: center; }
+  .row .tb { flex: 1; text-align: center; padding: 12px; }
+  #stats { font-size: 11px; color: var(--faint); direction: ltr; text-align: center; }
+
+  /* torch */
+  #torch { position: fixed; inset: 0; z-index: 4; display: none; place-items: center; text-align: center; padding: 24px; }
+  #torch.on { display: grid; }
+  #torch b { font-size: clamp(40px, 13vw, 84px); font-weight: 900; line-height: 1.05; color: #fff; text-shadow: 0 0 30px rgba(0, 0, 0, .55); text-wrap: balance; }
+  #torch small { position: absolute; bottom: max(22px, env(safe-area-inset-bottom)); inset-inline: 0; font-size: 13px; font-weight: 700; color: rgba(255, 255, 255, .75); }
+  #err { position: fixed; bottom: 0; inset-inline: 0; z-index: 9; font: 11px monospace; color: #ff9a9a; direction: ltr; padding: 4px 8px; pointer-events: none; }
+</style>
+</head>
+<body>
+<canvas id="fx"></canvas>
+
+<section id="start" class="screen on">
+  <div class="box">
+    <div class="kicker">הערב · בהופעה</div>
+    <h1>קריוקי חי</h1>
+    <div class="who">ליאת בנאי</div>
+    <button id="go" disabled>התחל להקשיב</button>
+    <div id="count">טוען שירים...</div>
+    <div id="startMsg"></div>
+  </div>
+</section>
+
+<section id="live" class="screen">
+  <div class="top">
+    <span id="chip"><i></i><span id="chipT">מקשיבה</span></span>
+    <span class="sp"></span>
+    <button class="tb" id="bSongs">שירים</button>
+    <button class="tb" id="bTorch">פנס</button>
+    <button class="tb" id="bLog">יומן</button>
+  </div>
+  <div id="songbox">
+    <div id="songTitle" class="idle">מקשיבה ומחפשת את השיר...</div>
+    <div id="songMeta"></div>
+    <div id="conf"><b></b></div>
+  </div>
+  <div id="stage">
+    <span id="badge">חי</span>
+    <p class="ln" id="prev"></p>
+    <p class="ln" id="cur"></p>
+    <p class="ln" id="next1"></p>
+    <p class="ln" id="next2"></p>
+  </div>
+  <div class="foot">
+    <div id="heard"></div>
+    <button class="tb" id="other">שיר אחר</button>
+  </div>
+</section>
+
+<div class="sheet" id="sheetSongs">
+  <header><h2>בחירת שיר</h2><button class="tb" data-close>סגור</button></header>
+  <input id="q" type="search" placeholder="חיפוש שיר" autocomplete="off">
+  <ul class="list" id="songList"></ul>
+  <div></div>
+</div>
+
+<div class="sheet" id="sheetLog">
+  <header><h2>יומן ההופעה</h2><button class="tb" data-close>סגור</button></header>
+  <div id="stats"></div>
+  <ul class="list" id="logList"></ul>
+  <div class="row"><button class="tb" id="share">שיתוף</button><button class="tb" id="clear">ניקוי</button></div>
+</div>
+
+<div id="torch"><b id="torchT"></b><small>הקשה ליציאה</small></div>
+<div id="err"></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>

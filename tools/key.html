@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>מפתח Groq</title>
+<style>
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #0d0b14; color: #f3eefc; font: 18px/1.6 system-ui, "Segoe UI", Arial, sans-serif; }
+  main { width: min(560px, 92vw); padding: 32px; background: #181425; border: 1px solid #2e2745; border-radius: 16px; }
+  h1 { margin: 0 0 8px; font-size: 26px; }
+  ol { padding-inline-start: 22px; color: #c9c0de; }
+  a { color: #ff7ac8; }
+  input { width: 100%; box-sizing: border-box; padding: 14px; font: 16px ui-monospace, Consolas, monospace; direction: ltr; background: #0d0b14; color: #fff; border: 1px solid #453a66; border-radius: 10px; }
+  button { margin-top: 14px; width: 100%; padding: 14px; font: inherit; font-weight: 700; color: #14101f; background: #ff7ac8; border: 0; border-radius: 10px; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  #msg { margin-top: 14px; min-height: 28px; font-weight: 600; }
+  .ok { color: #6ee7a8; } .bad { color: #ff8a8a; }
+</style>
+</head>
+<body>
+<main>
+  <h1>מפתח Groq</h1>
+  <ol>
+    <li>פותחים את <a href="https://console.groq.com/keys" target="_blank" rel="noopener">console.groq.com/keys</a> ונכנסים עם Google.</li>
+    <li>לוחצים Create API Key, נותנים שם כלשהו, ומעתיקים את המפתח (מתחיל ב-<span dir="ltr">gsk_</span>).</li>
+    <li>מדביקים כאן ולוחצים שמור.</li>
+  </ol>
+  <input id="k" type="password" placeholder="gsk_..." autocomplete="off" spellcheck="false">
+  <button id="b">שמור</button>
+  <div id="msg"></div>
+</main>
+<script>
+  const k = document.getElementById('k'), b = document.getElementById('b'), msg = document.getElementById('msg');
+  const show = (t, c) => { msg.textContent = t; msg.className = c; };
+  fetch('/api/status').then(r => r.json()).then(s => { if (s.hasKey) show('כבר שמור מפתח תקין. אפשר לסגור את הדף.', 'ok'); });
+  b.onclick = async () => {
+    b.disabled = true; show('בודק את המפתח...', '');
+    try {
+      const r = await fetch('/api/key', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ key: k.value }) });
+      const j = await r.json();
+      if (j.ok) { k.value = ''; show('המפתח נשמר ועובד. אפשר לסגור את הדף.', 'ok'); }
+      else if (j.error === 'format') show('זה לא נראה כמו מפתח Groq. הוא אמור להתחיל ב-gsk_', 'bad');
+      else show('Groq דחה את המפתח. כדאי ליצור מפתח חדש ולנסות שוב.', 'bad');
+    } catch { show('לא הצלחתי לשמור. נסה שוב.', 'bad'); }
+    b.disabled = false;
+  };
+</script>
+</body>
+</html>

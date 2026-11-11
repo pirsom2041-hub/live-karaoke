@@ -1,0 +1,5 @@
+.secret.json
+catalog.json
+.cache/
+link.html
+node_modules/

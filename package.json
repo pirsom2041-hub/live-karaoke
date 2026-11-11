@@ -1,0 +1,14 @@
+{
+  "name": "live-karaoke",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "serve": "node tools/serve.mjs",
+    "catalog": "node tools/build-catalog.mjs",
+    "test": "node tools/sim.test.mjs",
+    "publish-data": "node tools/publish.mjs"
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4"
+  }
+}
