@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
 <meta name="theme-color" content="#08060e">
-<meta name="app-version" content="mwcbpjn3">
+<meta name="app-version" content="mwcd3tjw">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg">
 <title>קריוקי חי</title>
@@ -74,6 +74,19 @@
   #stanzas::-webkit-scrollbar { display: none; }
   .sz { flex: none; padding: 9px 14px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line); font-size: 14px; font-weight: 700; color: var(--dim); white-space: nowrap; }
   .sz.on { color: #12091c; background: var(--hot); border-color: transparent; }
+  #deck { display: none; grid-row: 3; min-height: 0; overflow-y: auto; grid-template-columns: 1fr 1fr; gap: 10px; align-content: start; padding: 2px 0 8px; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+  #deck::-webkit-scrollbar { display: none; }
+  #deck.on { display: grid; }
+  #stage { grid-row: 3; }
+  #stage.off { display: none; }
+  #stanzas { grid-row: 4; }
+  .foot { grid-row: 5; }
+  .card { display: grid; gap: 5px; align-content: center; min-height: 76px; padding: 12px 14px; border-radius: 16px; background: var(--panel); border: 1px solid var(--line); text-align: start; }
+  .card b { font-size: 17px; font-weight: 800; line-height: 1.2; }
+  .card small { font-size: 12px; font-weight: 700; color: var(--hot); }
+  .card.done { opacity: .45; }
+  .card.done small { color: var(--dim); }
+  .card:active { background: hsl(var(--h) 80% 40% / .5); }
   #pace { display: flex; align-items: center; gap: 12px; }
   .pc { padding: 7px 13px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line); font-size: 13px; font-weight: 700; color: var(--ink); }
   .pc:active { background: hsl(var(--h) 80% 40% / .5); }
@@ -131,14 +144,15 @@
     <span id="chip"><i></i><span id="chipT">מקשיבה</span></span>
     <span class="sp"></span>
     <button class="tb" id="bSongs">שירים</button>
-    <button class="tb" id="bTorch">פנס</button>
+    <button class="tb" id="bTorch">קהל</button>
     <button class="tb" id="bLog">יומן</button>
   </div>
   <div id="songbox">
-    <div id="songTitle" class="idle">מקשיבה ומחפשת את השיר...</div>
+    <div id="songTitle" class="idle">בחר שיר, או חכה לזיהוי</div>
     <div id="songMeta"></div>
     <div id="conf"><b></b></div>
   </div>
+  <div id="deck"></div>
   <div id="stage">
     <div id="pace"><button class="pc" id="slower" hidden>לאט יותר</button><span id="badge">חי</span><button class="pc" id="faster" hidden>מהר יותר</button></div>
     <div id="hint"></div>
@@ -171,6 +185,6 @@
 
 <div id="torch"><b id="torchT"></b><small>הקשה ליציאה</small></div>
 <div id="err"></div>
-<script type="module" src="app.js?v=mwcbpjn3"></script>
+<script type="module" src="app.js?v=mwcd3tjw"></script>
 </body>
 </html>

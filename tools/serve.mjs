@@ -15,7 +15,7 @@ const MIME = {
   '.svg': 'image/svg+xml', '.png': 'image/png', '.enc': 'application/octet-stream', '.ico': 'image/x-icon',
 };
 // Only these top-level files are served as the app (never .secret.json, catalog.json or .cache).
-const PUBLIC = new Set(['index.html', 'app.js', 'matcher.js', 'audio.js', 'visuals.js', 'store.js', 'sw.js', 'manifest.webmanifest', 'icon.svg', 'data.enc']);
+const PUBLIC = new Set(['index.html', 'app.js', 'matcher.js', 'audio.js', 'visuals.js', 'store.js', 'keep.js', 'sw.js', 'manifest.webmanifest', 'icon.svg', 'data.enc']);
 
 const readJson = async (p, d) => { try { return JSON.parse(await readFile(p, 'utf8')); } catch { return d; } };
 const readBody = (req) => new Promise((res, rej) => {

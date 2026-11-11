@@ -1,10 +1,11 @@
-import { createMatcher } from './matcher.js?v=mwcbpjn3';
-import { createAudio } from './audio.js?v=mwcbpjn3';
-import { createVisuals, hueOf } from './visuals.js?v=mwcbpjn3';
-import { loadBundle, setlist } from './store.js?v=mwcbpjn3';
+import { createMatcher } from './matcher.js?v=mwcd3tjw';
+import { createAudio } from './audio.js?v=mwcd3tjw';
+import { createVisuals, hueOf } from './visuals.js?v=mwcd3tjw';
+import { loadBundle, setlist } from './store.js?v=mwcd3tjw';
+import { keepChunk, keepEvent, count as keptCount, clearAll as clearKept, kept } from './keep.js?v=mwcd3tjw';
 
 // Stamped by tools/stamp.mjs into this file, the module URLs above and the page.
-const VERSION = 'mwcbpjn3';
+const VERSION = 'mwcd3tjw';
 
 const $ = (id) => document.getElementById(id);
 const now = () => performance.now() / 1000;
@@ -13,6 +14,7 @@ const demo = params.has('demo');
 // Diagnostics (opt-in through the link): uploads each recorded chunk and its transcript so the capture can be inspected.
 const diagTopic = /^[a-z0-9-]{12,64}$/.test(params.get('diag') || '') ? params.get('diag') : null;
 let diagN = 0;
+const bootAt = Date.now();
 
 let bundle = null, matcher = null, audio = null, visuals = null, wake = null;
 let live = false, lastKey = '', lastSung = -1, lastSongId = null, verifying = false, lastVerify = -99;
@@ -56,6 +58,14 @@ function ensureDom() {
   if (!$('hint')) $('pace').after(mk('div', 'hint'));
   if (!$('next3')) $('next2').after(mk('p', 'next3', 'ln'));
   if (!$('stanzas')) $('stage').after(mk('div', 'stanzas'));
+  if (!$('deck')) $('stage').before(mk('div', 'deck'));
+  if (!$('keptRow')) {
+    const row = mk('div', 'keptRow', 'row');
+    const info = mk('span', 'keptN');
+    info.style.cssText = 'flex:2;font-size:12px;color:var(--dim)';
+    row.append(info, mk('button', 'keptClear', 'tb', 'מחיקת הקלטות'));
+    $('logList').after(row);
+  }
 }
 
 async function boot() {
@@ -93,6 +103,7 @@ async function boot() {
   $('count').textContent = `${matcher.songs.length} שירים טעונים, ${full} מהם עם מילים מלאות`;
   $('go').disabled = false;
   buildSongList('');
+  buildDeck();
   renderLog();
   wire();
   if (demo) startDemo();
@@ -101,7 +112,7 @@ async function boot() {
     await start();
     setInterval(() => {
       const s = matcher.state;
-      fetch('/api/report', { method: 'POST', body: JSON.stringify({ t: Math.round(now()), phase: s.phase, song: s.song && s.song.id, mode: s.mode, paused: s.paused, conf: +s.conf.toFixed(2), heardChars: s.heard.length, known: s.known, net: audio.net }) }).catch(() => {});
+      fetch('/api/report', { method: 'POST', body: JSON.stringify({ kept: kept(), t: Math.round(now()), phase: s.phase, song: s.song && s.song.id, mode: s.mode, paused: s.paused, conf: +s.conf.toFixed(2), heardChars: s.heard.length, known: s.known, net: audio.net }) }).catch(() => {});
     }, 3000);
   }
 }
@@ -116,17 +127,29 @@ function wire() {
     const li = e.target.closest('li[data-id]');
     if (!li) return;
     matcher.select(li.dataset.id, now());
+    keepEvent({ type: 'pick', song: li.dataset.id });
     $('sheetSongs').classList.remove('on');
   };
-  $('other').onclick = () => { matcher.release(now()); };
+  // Deck: the songs as big buttons whenever no song is open. One tap opens a song.
+  $('deck').onclick = (e) => {
+    const c = e.target.closest('button[data-id]');
+    if (!c) return;
+    matcher.select(c.dataset.id, now());
+    keepEvent({ type: 'pick', song: c.dataset.id });
+  };
+  $('keptClear').onclick = async () => {
+    if (confirm('למחוק את ההקלטות שנשמרו בפלאפון?')) { await clearKept(); renderLog(); }
+  };
+  $('other').onclick = () => { matcher.release(now()); keepEvent({ type: 'release' }); };
   // Stanza bar: one tap jumps to a stanza (the chorus coming back, for example) and starts it now.
   $('stanzas').onclick = (e) => {
     const b = e.target.closest('button[data-k]');
-    if (b && matcher.jump(+b.dataset.k, now())) { lastKey = ''; if (navigator.vibrate) navigator.vibrate(15); }
+    if (b && matcher.jump(+b.dataset.k, now())) { lastKey = ''; keepEvent({ type: 'jump', k: +b.dataset.k }); if (navigator.vibrate) navigator.vibrate(15); }
   };
   // Tap the lyrics: start the waiting line now, or jump to the next one. Tap the line above: go back one.
   $('stage').onclick = (e) => {
-    if (matcher.nudge(e.target.closest('#prev') ? -1 : 1, now())) { lastKey = ''; if (navigator.vibrate) navigator.vibrate(15); }
+    const dir = e.target.closest('#prev') ? -1 : 1;
+    if (matcher.nudge(dir, now())) { lastKey = ''; keepEvent({ type: 'tap', dir }); if (navigator.vibrate) navigator.vibrate(15); }
   };
   // Pace buttons: the estimated timing of the lyrics, for every song, remembered on this phone.
   const pace = (f) => {
@@ -172,6 +195,17 @@ async function keepAwake() {
 
 async function onChunk(c) {
   const hyp = matcher.feedChunk(c);
+  if (c.blob) {
+    // Kept on this phone only, for testing the next version against a real show.
+    const st = matcher.state, tr = c.tr;
+    keepChunk({
+      at: Date.now(), t0: c.t0, t1: c.t1, blob: c.blob, model: c.meta && c.meta.model, level: c.meta && c.meta.level,
+      text: (tr.text || '').slice(0, 500),
+      words: (tr.words || []).slice(0, 80).map((w) => [w.word, +Number(w.start).toFixed(2), +Number(w.end).toFixed(2)]),
+      segs: (tr.segments || []).slice(0, 12).map((g) => [+Number(g.start).toFixed(2), +Number(g.end).toFixed(2), +Number(g.avg_logprob).toFixed(2), +Number(g.no_speech_prob).toFixed(2)]),
+      phase: st.phase, song: st.song && st.song.id, mode: st.mode, paused: st.paused, hyp,
+    });
+  }
   if (diagTopic && c.blob) sendDiag(c, hyp);
   // A weak candidate gets a second transcription of the same audio, hinted with that song's lyrics.
   if (!hyp || !c.blob || verifying || matcher.state.phase === 'locked') return;
@@ -208,6 +242,8 @@ function diagNote(obj) {
 }
 
 function onEvent(ev) {
+  keepEvent({ type: ev.type, song: ev.song && ev.song.id, manual: ev.manual, why: ev.why, pace: ev.pace });
+  if (ev.type === 'lock' || ev.type === 'unlock') buildDeck();
   if (ev.type === 'pace') { try { localStorage.setItem('lk.pace', String(ev.pace)); } catch { /* storage unavailable */ } }
   if (ev.type === 'lock') {
     setlist.add(ev.song, ev.manual);
@@ -251,7 +287,7 @@ function render(t) {
     lastSongId = songId;
     const el = $('songTitle');
     el.classList.toggle('idle', !locked);
-    el.textContent = locked ? s.song.title : 'מקשיבה ומחפשת את השיר...';
+    el.textContent = locked ? s.song.title : 'בחר שיר, או חכה לזיהוי';
     $('songMeta').textContent = locked ? (s.song.album || '') : '';
     $('torchT').textContent = locked ? s.song.title : 'ליאת בנאי';
     $('other').classList.toggle('on', locked);
@@ -260,7 +296,11 @@ function render(t) {
   $('conf').firstElementChild.style.width = `${Math.round(s.conf * 100)}%`;
   setText('heard', s.heard ? `שמעתי: ${s.heard}` : '');
 
+  $('deck').classList.toggle('on', !locked);
+  $('stage').classList.toggle('off', !locked);
   const p = locked && s.mode === 'karaoke' ? matcher.position(t) : null;
+  // Crowd mode: the line being sung, in giant letters.
+  if (visuals.torch) setText('torchT', p ? p.lines[p.idx].x : locked ? s.song.title : 'ליאת בנאי');
   $('slower').hidden = $('faster').hidden = !(p && s.full);
   if (p) {
     const L = p.lines, i = p.idx;
@@ -318,6 +358,24 @@ function setCurrent(text, caption) {
     if (i < words.length - 1) cur.append(' ');
   });
   cur.classList.remove('swap'); void cur.offsetWidth; cur.classList.add('swap');
+}
+
+// The deck: songs with full lyrics first, in the catalog's popularity order. Songs already sung tonight go last.
+function buildDeck() {
+  const el = $('deck');
+  el.textContent = '';
+  const sung = new Set(setlist.all().filter((e) => e.at >= bootAt).map((e) => e.id));
+  const rank = (s) => (sung.has(s.id) ? 2 : s.lines >= 12 ? 0 : 1);
+  const items = matcher.songs.filter((s) => s.lines > 0).map((s, i) => [s, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]);
+  for (const [s] of items) {
+    const b = document.createElement('button');
+    b.className = sung.has(s.id) ? 'card done' : 'card';
+    b.dataset.id = s.id;
+    const t = document.createElement('b'); t.textContent = s.title;
+    const sm = document.createElement('small'); sm.textContent = sung.has(s.id) ? 'הושר' : s.lines >= 12 ? 'מילים מלאות' : 'קטע מהשיר';
+    b.append(t, sm);
+    el.append(b);
+  }
 }
 
 function buildStanzas(list) {
@@ -378,6 +436,7 @@ function renderLog() {
     ul.append(li);
   });
   if (audio) $('stats').textContent = `ok ${audio.net.ok} · fail ${audio.net.fail} · ${audio.net.lastMs} ms · ${net.state}`;
+  keptCount().then((k) => { $('keptN').textContent = k ? `${k} קטעי הקלטה שמורים בפלאפון, לשיפור הגרסה הבאה. הם לא נשלחים לשום מקום.` : 'אין הקלטות שמורות בפלאפון.'; });
 }
 
 async function shareLog() {
@@ -399,7 +458,8 @@ function startDemo() {
   audio.startDemo();
   goLive();
   // ?pick: the manual route, exactly as tapping the song in the list. No audio is fed.
-  if (params.has('pick')) { matcher.select(song.id, now()); return; }
+  if (params.has('idle')) return; // the deck, with nothing open
+  if (params.has('pick')) { matcher.select(song.id, now()); if (params.has('crowd')) $('bTorch').click(); return; }
   // The song "started" nine seconds ago; wall time of a line = w0 + its time in the section.
   const w0 = now() - 9 - sec.lines[0].a;
   const feed = (end) => {
