@@ -29,7 +29,7 @@ export function createMatcher(catalog, opts = {}) {
     lockRatio: 1.8,    // lead over the runner-up
     switchChunk: 1.6,  // chunk score for another song that steals the lock
     decay: 0.6,
-    lostAfter: 60,     // seconds without any match before the lock is released
+    lostAfter: 150,    // seconds without any match before the lock is released (far-field audio matches rarely)
     hypMin: 0.45,      // weakest candidate worth a second, lyric-hinted transcription
     verifyMin: 2.5,    // score the hinted transcription must reach to lock
     onEvent: () => {},
@@ -57,7 +57,7 @@ export function createMatcher(catalog, opts = {}) {
     const titles = s.title.split('·').map((t) => { const tn = norm(t); const tg = [...grams(tn)]; return { tg, tw: weigh(tg), tk: tn.split(' ').length, mul: 1 }; }).filter((t) => t.tw);
     return {
       id: s.id, title: s.title, album: s.album, year: s.year, dur: s.dur, titles,
-      sections: s.sections.map((sec) => ({ src: sec.src, live: !!sec.live, lines: sec.lines.map(mkLine).filter((l) => l.k > 0) })),
+      sections: s.sections.map((sec) => ({ src: sec.src, live: !!sec.live, full: !!sec.full, lines: sec.lines.map(mkLine).filter((l) => l.k > 0) })),
       learned: null,
     };
   });
@@ -86,8 +86,14 @@ export function createMatcher(catalog, opts = {}) {
     ev: new Map(), captions: [], pending: [], heard: '', conf: 0, lastCapEnd: 0,
   };
 
-  // The section with the most words is the one shown when a song is picked by hand.
+  // Real lyrics (from the web) are the only thing ever displayed for a song that has them:
+  // clip transcripts and live captions contain misheard words and serve as matching evidence only.
+  const fullSec = (song) => song.sections.find((sec) => sec.full && sec.lines.length) || null;
+  const showSecs = (song) => { const f = fullSec(song); return f ? [f] : secsOf(song); };
+  // Without real lyrics, the section with the most words is the one shown when a song is picked by hand.
   const mainSec = (song) => {
+    const f = fullSec(song);
+    if (f) return f;
     let best = null, n = 0;
     for (const sec of song.sections) { const w = sec.lines.reduce((a, l) => a + l.k, 0); if (w > n) { n = w; best = sec; } }
     return best;
@@ -134,7 +140,7 @@ export function createMatcher(catalog, opts = {}) {
   function matchLines(song, T, words, t0) {
     const cands = [];
     const cur = st.anchor && !st.anchor.paused ? st.anchor : null;
-    for (const sec of secsOf(song)) sec.lines.forEach((l, i) => {
+    for (const sec of showSecs(song)) sec.lines.forEach((l, i) => {
       if (sec.learned && l.b > t0 - 2) return;
       if (l.k < 2) return;
       const c = cont(l.g, l.w, T);
@@ -162,7 +168,7 @@ export function createMatcher(catalog, opts = {}) {
   }
 
   function learn(song, caps) {
-    if (!caps.length) return;
+    if (!caps.length || fullSec(song)) return;
     if (!song.learned) song.learned = { src: 'live', learned: true, lines: [] };
     const have = new Set(secsOf(song).flatMap((sec) => sec.lines.map((l) => l.n)));
     for (const c of caps) {
@@ -202,7 +208,9 @@ export function createMatcher(catalog, opts = {}) {
     const inSeg = (w) => segs.some((s) => w.start >= s.start - 0.1 && w.end <= s.end + 0.1);
     const words = (tr.words || []).filter(inSeg).map((w) => ({ n: norm(w.word), s: t0 + w.start, e: t0 + w.end })).filter((w) => w.n);
     const text = segs.map((s) => s.text.trim()).join(' ');
-    const caps = segs.map((s) => ({ a: t0 + s.start, b: t0 + s.end, x: s.text.trim().replace(/[.,!?"]/g, '') }));
+    // Low-confidence segments still count as matching evidence, but they read as nonsense, so they are never displayed.
+    const caps = segs.filter((s) => !(s.avg_logprob < -0.75) && !(s.no_speech_prob > 0.5))
+      .map((s) => ({ a: t0 + s.start, b: t0 + s.end, x: s.text.trim().replace(/[.,!?"]/g, '') }));
     return { words, text, caps, T: grams(norm(text)) };
   }
 
@@ -281,7 +289,7 @@ export function createMatcher(catalog, opts = {}) {
 
   // Up to 40 words of a song's known lyrics (the hint limit of the transcription model is small).
   function hint(song, text, now) {
-    const secs = secsOf(song).filter((s) => s.lines.length);
+    const secs = showSecs(song).filter((s) => s.lines.length);
     if (!secs.length) return '';
     let sec = null, start = 0;
     if (text) {
@@ -309,9 +317,24 @@ export function createMatcher(catalog, opts = {}) {
     if (!a) return false;
     const L = a.sec.lines;
     let idx;
-    if (a.paused) idx = a.idx + (dir < 0 ? -1 : 0);
-    else { const p = position(now); idx = (p.waiting ? -1 : p.idx) + (dir < 0 ? -1 : 1); }
-    if (idx >= L.length) { st.anchor = null; st.mode = 'captions'; st.hold = false; return true; }
+    if (a.paused) idx = a.end ? 0 : a.idx + (dir < 0 ? -1 : 0);
+    else {
+      const p = position(now);
+      idx = (p.waiting ? -1 : p.idx) + (dir < 0 ? -1 : 1);
+      // Web lyrics have estimated timing. A forward tap shows how long the line really took,
+      // so the rest of the song moves halfway toward that pace.
+      if (dir > 0 && a.sec.full && !p.waiting && p.idx + 1 < L.length) {
+        const f = Math.sqrt(Math.min(2, Math.max(0.5, (now - a.offset - L[p.idx].a) / (L[p.idx + 1].a - L[p.idx].a))));
+        const base = L[p.idx + 1].a;
+        for (let i = p.idx + 1; i < L.length; i++) { L[i].a = base + (L[i].a - base) * f; L[i].b = base + (L[i].b - base) * f; }
+      }
+    }
+    if (idx >= L.length) {
+      st.hold = false;
+      if (a.sec.full) st.anchor = { sec: a.sec, idx: L.length - 1, paused: true, end: true };
+      else { st.anchor = null; st.mode = 'captions'; }
+      return true;
+    }
     idx = Math.max(0, idx);
     st.anchor = { sec: a.sec, offset: now - L[idx].a };
     st.mode = 'karaoke'; st.hold = true; st.lastMatch = now;
@@ -322,7 +345,12 @@ export function createMatcher(catalog, opts = {}) {
     if (st.phase === 'locked' && !st.manual && now - st.lastMatch > O.lostAfter) unlock(now, 'lost');
     if (st.phase === 'locked' && st.mode === 'karaoke') {
       const p = position(now);
-      if (!p || p.ended) { st.mode = 'captions'; st.anchor = null; st.hold = false; }
+      if (!p || p.ended) {
+        const f = fullSec(st.song);
+        st.hold = false;
+        if (f) st.anchor = { sec: f, idx: f.lines.length - 1, paused: true, end: true }; // real lyrics stay on screen
+        else { st.mode = 'captions'; st.anchor = null; }
+      }
     }
   }
 
@@ -331,7 +359,7 @@ export function createMatcher(catalog, opts = {}) {
     const a = st.anchor;
     if (!a) return null;
     const L = a.sec.lines;
-    if (a.paused) return { lines: L, idx: a.idx, frac: 0, ended: false, waiting: true, paused: true };
+    if (a.paused) return { lines: L, idx: a.idx, frac: 0, ended: false, waiting: true, paused: true, end: !!a.end };
     const t = now - a.offset;
     let idx = -1;
     for (let i = 0; i < L.length; i++) if (L[i].a <= t + 0.2) idx = i; else break;

@@ -201,11 +201,11 @@ function render(t) {
   const p = locked && s.mode === 'karaoke' ? matcher.position(t) : null;
   if (p) {
     const L = p.lines, i = p.idx;
-    const key = `k|${songId}|${i}|${L.length}|${p.paused ? 'p' : 'r'}`;
+    const key = `k|${songId}|${i}|${L.length}|${p.paused ? 'p' : 'r'}|${p.end ? 'e' : ''}`;
     if (key !== lastKey) {
       lastKey = key; lastSung = -1;
       setBadge(p.paused ? 'מילים' : 'קריוקי', true);
-      setText('hint', p.paused ? 'הקשה על המסך ברגע שהיא מתחילה את השורה הזאת' : 'הקשה: לשורה הבאה · הקשה על השורה שמעל: חזרה');
+      setText('hint', p.end ? 'סוף המילים. הקשה מחזירה להתחלה' : p.paused ? 'הקשה על המסך ברגע שהיא מתחילה את השורה הזאת' : 'הקשה: לשורה הבאה · הקשה על השורה שמעל: חזרה');
       $('prev').textContent = i > 0 ? L[i - 1].x : '';
       setCurrent(L[i].x, false);
       $('next1').textContent = L[i + 1] ? L[i + 1].x : '';
