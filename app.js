@@ -7,6 +7,9 @@ const $ = (id) => document.getElementById(id);
 const now = () => performance.now() / 1000;
 const params = new URLSearchParams(location.search);
 const demo = params.has('demo');
+// Diagnostics (opt-in through the link): uploads each recorded chunk and its transcript so the capture can be inspected.
+const diagTopic = /^[a-z0-9-]{12,64}$/.test(params.get('diag') || '') ? params.get('diag') : null;
+let diagN = 0;
 
 let bundle = null, matcher = null, audio = null, visuals = null, wake = null;
 let live = false, lastKey = '', lastSung = -1, lastSongId = null;
@@ -36,6 +39,7 @@ async function boot() {
     model: () => bundle.catalog.liveModel || 'whisper-large-v3',
     onChunk,
     onStatus: (s, extra) => { net.state = s; net.extra = extra || ''; },
+    cycleProfiles: diagTopic ? ['raw', 'dsp'] : null,
   });
   $('count').textContent = `${matcher.songs.length} שירים טעונים`;
   $('go').disabled = false;
@@ -106,6 +110,20 @@ async function keepAwake() {
 function onChunk(c) {
   matcher.feedChunk(c);
   audio.setMode(matcher.state.phase === 'locked');
+  if (diagTopic && c.blob) sendDiag(c);
+}
+
+function sendDiag(c) {
+  const s = matcher.state, tr = c.tr;
+  const info = {
+    n: ++diagN, dur: +(c.t1 - c.t0).toFixed(1), m: c.meta,
+    text: (tr.text || '').slice(0, 260),
+    q: (tr.segments || []).slice(0, 6).map((g) => [g.avg_logprob, g.no_speech_prob, g.compression_ratio].map((x) => +Number(x).toFixed(2))),
+    top: matcher.debugScores(tr.text || '').slice(0, 3), phase: s.phase, song: s.song && s.song.title, mode: s.mode,
+  };
+  if (diagN === 1) info.ua = navigator.userAgent;
+  fetch(`https://ntfy.sh/${diagTopic}?filename=c${diagN}.webm&message=${encodeURIComponent(JSON.stringify(info))}`, { method: 'PUT', body: c.blob }).catch(() => {});
+  $('heard').style.color = '#ffd27a';
 }
 
 function onEvent(ev) {
