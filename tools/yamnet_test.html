@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>YAMNet check</title></head>
+<body>
+<pre id="log">loading...</pre>
+<!-- Local measurement page: runs YAMNet (TF.js) over the studio preview clips and reports the "Singing" score per patch. -->
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+<script>
+const log = (t) => { document.getElementById('log').textContent += '\n' + t; };
+const post = (obj) => fetch('/api/yamnet', { method: 'POST', body: JSON.stringify(obj) });
+(async () => {
+  try {
+    await tf.ready();
+    const backend = tf.getBackend();
+    let model = null, src = '';
+    for (const url of ['https://tfhub.dev/google/tfjs-model/yamnet/tfjs/1', 'https://www.kaggle.com/models/google/yamnet/tfJs/tfjs/1']) {
+      try { model = await tf.loadGraphModel(url, { fromTFHub: true }); src = url; break; } catch (e) { log('model load failed from ' + url + ': ' + e.message); }
+    }
+    if (!model) { await post({ error: 'model not loaded' }); return; }
+    log('model loaded from ' + src + ' on backend ' + backend);
+    const clips = await (await fetch('/api/dev-clips')).json();
+    const limit = Number(new URLSearchParams(location.search).get('n') || clips.length);
+    let done = 0;
+    for (const name of clips.slice(0, limit)) {
+      const buf = await (await fetch('/dev-audio/' + encodeURIComponent(name))).arrayBuffer();
+      const tmp = new OfflineAudioContext(1, 16000, 16000);
+      const audio = await tmp.decodeAudioData(buf);
+      const off = new OfflineAudioContext(1, Math.ceil(audio.duration * 16000), 16000);
+      const node = off.createBufferSource(); node.buffer = audio; node.connect(off.destination); node.start();
+      const wav = (await off.startRendering()).getChannelData(0);
+      const t0 = performance.now();
+      const x = tf.tensor1d(wav);
+      const out = model.predict(x);
+      const scores = Array.isArray(out) ? out[0] : out;
+      const data = await scores.array();
+      const ms = performance.now() - t0;
+      x.dispose(); (Array.isArray(out) ? out : [out]).forEach((t) => t.dispose());
+      const col = (k) => data.map((row) => +row[k].toFixed(5));
+      await post({ file: name, patches: data.length, classes: data[0].length, ms: Math.round(ms), backend, singing: col(24), speech: col(0), music: col(132) });
+      done++;
+      if (done % 5 === 0) log(done + ' clips');
+    }
+    await post({ done: true, clips: done, backend });
+    log('done');
+  } catch (e) { log('error ' + e.message); try { await post({ error: String(e.message) }); } catch {} }
+})();
+</script>
+</body>
+</html>

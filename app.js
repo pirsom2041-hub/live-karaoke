@@ -1,11 +1,11 @@
-import { createMatcher } from './matcher.js?v=mwdm8ft4';
-import { createAudio } from './audio.js?v=mwdm8ft4';
-import { createVisuals, hueOf } from './visuals.js?v=mwdm8ft4';
-import { loadBundle, setlist } from './store.js?v=mwdm8ft4';
-import { keepChunk, keepEvent, count as keptCount, clearAll as clearKept, kept, readAll } from './keep.js?v=mwdm8ft4';
+import { createMatcher } from './matcher.js?v=mwdmu8ja';
+import { createAudio } from './audio.js?v=mwdmu8ja';
+import { createVisuals, hueOf } from './visuals.js?v=mwdmu8ja';
+import { loadBundle, setlist } from './store.js?v=mwdmu8ja';
+import { keepChunk, keepEvent, count as keptCount, clearAll as clearKept, kept, readAll } from './keep.js?v=mwdmu8ja';
 
 // Stamped by tools/stamp.mjs into this file, the module URLs above and the page.
-const VERSION = 'mwdm8ft4';
+const VERSION = 'mwdmu8ja';
 
 const $ = (id) => document.getElementById(id);
 const now = () => performance.now() / 1000;
@@ -241,41 +241,80 @@ function sendDiag(c, hyp) {
   $('heard').style.color = '#ffd27a';
 }
 
-// Sends the kept recordings for analysis, only when the user asks: one small file with the events,
-// then the audio in parts of about 7 MB (a length-prefixed JSON index followed by the chunks).
+// Sends the kept recordings for analysis, only when the user asks.
+// The relay (ntfy.sh, anonymous use) allows 2 MB per file and 20 MB per three hours, so this sends:
+//  1. the events and the full index of every chunk (transcripts and app state, no audio), in small JSON files;
+//  2. the audio of an evenly spaced sample of chunks that fits what is left of the allowance, in parts under 2 MB.
+// Chunks already sent are remembered, so a later press sends the ones that did not fit.
 async function sendKept() {
   const topic = bundle.exportTopic, btn = $('keptSend'), info = $('keptN');
   if (!topic) { info.textContent = 'אין יעד לשליחה בגרסה הזאת.'; return; }
   btn.disabled = true;
+  const run = Date.now().toString(36);
+  let sentNow = 0;
+  const sentKey = 'lk.sent';
+  let sent = new Set();
+  try { sent = new Set(JSON.parse(localStorage.getItem(sentKey) || '[]')); } catch { /* storage unavailable */ }
   try {
     const chunks = await readAll('chunks'), events = await readAll('events');
     if (!chunks.length) { info.textContent = 'אין הקלטות לשליחה.'; return; }
+    let fileMax = 2 * 1024 * 1024, room = 18 * 1024 * 1024;
+    try {
+      const acc = await (await fetch('https://ntfy.sh/v1/account')).json();
+      fileMax = acc.limits.attachment_file_size || fileMax;
+      room = Math.min(room, (acc.stats.attachment_total_size_remaining || room) - 1024 * 1024);
+    } catch { /* keep the defaults */ }
+    const partMax = fileMax - 150 * 1024;
+    const put = async (name, body, note) => {
+      const r = await fetch(`https://ntfy.sh/${topic}?filename=${name}&message=${encodeURIComponent(JSON.stringify({ export: 2, run, ...note }))}`, { method: 'PUT', body });
+      if (!r.ok) throw new Error(`http ${r.status}`);
+      room -= body.size;
+    };
+    const meta = (c) => { const { blob, ...rest } = c; return { ...rest, size: blob ? blob.size : 0, type: blob ? blob.type : '' }; };
+
+    // 1. events + the index of every chunk
+    info.textContent = 'שולח את היומן והתמלולים...';
+    const first = sent.size === 0;
+    if (first) {
+      await put('lk-events.json', new Blob([JSON.stringify({ ua: navigator.userAgent, v: VERSION, events })]), { kind: 'events', n: events.length, chunks: chunks.length });
+      for (let i = 0, k = 1; i < chunks.length; i += 120, k++) {
+        await put(`lk-index-${k}.json`, new Blob([JSON.stringify(chunks.slice(i, i + 120).map(meta))]), { kind: 'index', k });
+        await new Promise((r) => setTimeout(r, 700));
+      }
+    }
+
+    // 2. audio: an evenly spaced sample of what has not been sent yet, as much as fits
+    const todo = chunks.filter((c) => c.blob && !sent.has(c.at));
+    if (!todo.length) { info.textContent = 'כל ההקלטות כבר נשלחו.'; return; }
+    const total = todo.reduce((n, c) => n + c.blob.size, 0);
+    const take = total <= room ? todo.length : Math.max(1, Math.floor(todo.length * (room / total) * 0.97));
+    const pick = [];
+    for (let i = 0; i < take; i++) pick.push(todo[Math.floor(i * todo.length / take)]);
     const parts = [];
     let cur = [], size = 0;
-    for (const c of chunks) {
-      const sz = c.blob ? c.blob.size : 0;
-      if (cur.length && size + sz > 7e6) { parts.push(cur); cur = []; size = 0; }
-      cur.push(c); size += sz;
+    for (const c of pick) {
+      if (c.blob.size > partMax) continue;
+      if (cur.length && size + c.blob.size > partMax - 60 * 1024) { parts.push(cur); cur = []; size = 0; }
+      cur.push(c); size += c.blob.size;
     }
     if (cur.length) parts.push(cur);
-    const put = async (name, body, note) => {
-      const r = await fetch(`https://ntfy.sh/${topic}?filename=${name}&message=${encodeURIComponent(JSON.stringify(note))}`, { method: 'PUT', body });
-      if (!r.ok) throw new Error(`http ${r.status}`);
-    };
-    info.textContent = 'שולח...';
-    await put('lk-events.json', new Blob([JSON.stringify({ ua: navigator.userAgent, v: VERSION, events })]), { export: 1, kind: 'events', n: events.length, parts: parts.length, chunks: chunks.length });
     for (let i = 0; i < parts.length; i++) {
-      info.textContent = `שולח חלק ${i + 1} מתוך ${parts.length}...`;
-      const index = parts[i].map(({ blob, ...rest }) => ({ ...rest, size: blob ? blob.size : 0, type: blob ? blob.type : '' }));
-      const head = new TextEncoder().encode(JSON.stringify(index));
+      info.textContent = `שולח הקלטות: חלק ${i + 1} מתוך ${parts.length}...`;
+      const head = new TextEncoder().encode(JSON.stringify(parts[i].map((c) => ({ at: c.at, size: c.blob.size }))));
       const len = new Uint8Array(4);
       new DataView(len.buffer).setUint32(0, head.length);
-      await put(`lk-part-${i + 1}.bin`, new Blob([len, head, ...parts[i].map((c) => c.blob).filter(Boolean)]), { export: 1, kind: 'part', i: i + 1, of: parts.length, chunks: parts[i].length });
+      await put(`lk-audio-${i + 1}.bin`, new Blob([len, head, ...parts[i].map((c) => c.blob)]), { kind: 'audio', i: i + 1, of: parts.length, chunks: parts[i].length });
+      for (const c of parts[i]) sent.add(c.at);
+      sentNow += parts[i].length;
+      try { localStorage.setItem(sentKey, JSON.stringify([...sent])); } catch { /* storage unavailable */ }
       await new Promise((r) => setTimeout(r, 1200));
     }
-    info.textContent = `נשלחו ${chunks.length} קטעים ב-${parts.length} חלקים. תודה.`;
+    const left = chunks.filter((c) => c.blob && !sent.has(c.at)).length;
+    info.textContent = left
+      ? `נשלחו ${sentNow} הקלטות וכל התמלולים. נשארו ${left} שלא נכנסו למכסה; אפשר ללחוץ שוב בעוד 3 שעות.`
+      : `נשלחו ${sentNow} הקלטות וכל התמלולים. תודה.`;
   } catch (e) {
-    info.textContent = `השליחה נעצרה באמצע (${e.message}). אפשר לנסות שוב מאוחר יותר.`;
+    info.textContent = `השליחה נעצרה (${e.message}) אחרי ${sentNow} הקלטות. אפשר לנסות שוב מאוחר יותר.`;
   } finally { btn.disabled = false; }
 }
 

@@ -1,7 +1,8 @@
 // Local helper server: key page and the app itself for desktop testing.
 // Binds to localhost only.
 import http from 'node:http';
-import { readFile, writeFile, mkdir, appendFile } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, appendFile, readdir } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -59,6 +60,21 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/key') {
       return send(res, 200, MIME['.html'], await readFile(path.join(ROOT, 'tools', 'key.html')));
+    }
+    // ---- local measurement helpers (YAMNet check over the preview clips) ----
+    if (p === '/yamnet-test') return send(res, 200, MIME['.html'], await readFile(path.join(ROOT, 'tools', 'yamnet_test.html')));
+    if (p === '/api/dev-clips') {
+      const tr = path.join(ROOT, '.cache', 'tr');
+      const names = (await readdir(path.join(ROOT, '.cache', 'audio'))).filter((f) => f.startsWith('dz_') && existsSync(path.join(tr, `${f}.whisper-large-v3.json`)));
+      return json(res, 200, names);
+    }
+    if (p.startsWith('/dev-audio/')) {
+      const name = path.basename(p);
+      return send(res, 200, 'audio/mpeg', await readFile(path.join(ROOT, '.cache', 'audio', name)));
+    }
+    if (p === '/api/yamnet' && req.method === 'POST') {
+      await appendFile(path.join(ROOT, '.cache', 'yamnet_scores.jsonl'), `${await readBody(req)}\n`);
+      return json(res, 200, { ok: true });
     }
     const rel = p === '/' ? 'index.html' : p.slice(1);
     if (!PUBLIC.has(rel)) return send(res, 404, 'text/plain', 'not found');
