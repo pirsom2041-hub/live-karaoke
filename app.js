@@ -1,11 +1,11 @@
-import { createMatcher } from './matcher.js?v=mwcdt1nj';
-import { createAudio } from './audio.js?v=mwcdt1nj';
-import { createVisuals, hueOf } from './visuals.js?v=mwcdt1nj';
-import { loadBundle, setlist } from './store.js?v=mwcdt1nj';
-import { keepChunk, keepEvent, count as keptCount, clearAll as clearKept, kept } from './keep.js?v=mwcdt1nj';
+import { createMatcher } from './matcher.js?v=mwdm8ft4';
+import { createAudio } from './audio.js?v=mwdm8ft4';
+import { createVisuals, hueOf } from './visuals.js?v=mwdm8ft4';
+import { loadBundle, setlist } from './store.js?v=mwdm8ft4';
+import { keepChunk, keepEvent, count as keptCount, clearAll as clearKept, kept, readAll } from './keep.js?v=mwdm8ft4';
 
 // Stamped by tools/stamp.mjs into this file, the module URLs above and the page.
-const VERSION = 'mwcdt1nj';
+const VERSION = 'mwdm8ft4';
 
 const $ = (id) => document.getElementById(id);
 const now = () => performance.now() / 1000;
@@ -63,7 +63,7 @@ function ensureDom() {
     const row = mk('div', 'keptRow', 'row');
     const info = mk('span', 'keptN');
     info.style.cssText = 'flex:2;font-size:12px;color:var(--dim)';
-    row.append(info, mk('button', 'keptClear', 'tb', 'מחיקת הקלטות'));
+    row.append(info, mk('button', 'keptSend', 'tb', 'שליחת הקלטות'), mk('button', 'keptClear', 'tb', 'מחיקת הקלטות'));
     $('logList').after(row);
   }
 }
@@ -110,9 +110,10 @@ async function boot() {
   // End-to-end test hook, local server only: start without a tap and report state.
   if (params.has('auto') && location.hostname === 'localhost') {
     await start();
+    if (params.has('export')) setTimeout(sendKept, 4000);
     setInterval(() => {
       const s = matcher.state;
-      fetch('/api/report', { method: 'POST', body: JSON.stringify({ kept: kept(), t: Math.round(now()), phase: s.phase, song: s.song && s.song.id, mode: s.mode, paused: s.paused, conf: +s.conf.toFixed(2), heardChars: s.heard.length, known: s.known, net: audio.net }) }).catch(() => {});
+      fetch('/api/report', { method: 'POST', body: JSON.stringify({ sendInfo: $('keptN') ? $('keptN').textContent : '', kept: kept(), t: Math.round(now()), phase: s.phase, song: s.song && s.song.id, mode: s.mode, paused: s.paused, conf: +s.conf.toFixed(2), heardChars: s.heard.length, known: s.known, net: audio.net }) }).catch(() => {});
     }, 3000);
   }
 }
@@ -136,6 +137,9 @@ function wire() {
     if (!c) return;
     matcher.select(c.dataset.id, now());
     keepEvent({ type: 'pick', song: c.dataset.id });
+  };
+  $('keptSend').onclick = () => {
+    if (confirm('לשלוח את ההקלטות מההופעה לבדיקה? הן עוברות דרך שירות חיצוני (ntfy.sh) ונמחקות ממנו אחרי 3 שעות.')) sendKept();
   };
   $('keptClear').onclick = async () => {
     if (confirm('למחוק את ההקלטות שנשמרו בפלאפון?')) { await clearKept(); renderLog(); }
@@ -235,6 +239,44 @@ function sendDiag(c, hyp) {
   if ($('err').textContent) info.err = $('err').textContent.slice(0, 140);
   fetch(`https://ntfy.sh/${diagTopic}?filename=c${diagN}.webm&message=${encodeURIComponent(JSON.stringify(info))}`, { method: 'PUT', body: c.blob }).catch(() => {});
   $('heard').style.color = '#ffd27a';
+}
+
+// Sends the kept recordings for analysis, only when the user asks: one small file with the events,
+// then the audio in parts of about 7 MB (a length-prefixed JSON index followed by the chunks).
+async function sendKept() {
+  const topic = bundle.exportTopic, btn = $('keptSend'), info = $('keptN');
+  if (!topic) { info.textContent = 'אין יעד לשליחה בגרסה הזאת.'; return; }
+  btn.disabled = true;
+  try {
+    const chunks = await readAll('chunks'), events = await readAll('events');
+    if (!chunks.length) { info.textContent = 'אין הקלטות לשליחה.'; return; }
+    const parts = [];
+    let cur = [], size = 0;
+    for (const c of chunks) {
+      const sz = c.blob ? c.blob.size : 0;
+      if (cur.length && size + sz > 7e6) { parts.push(cur); cur = []; size = 0; }
+      cur.push(c); size += sz;
+    }
+    if (cur.length) parts.push(cur);
+    const put = async (name, body, note) => {
+      const r = await fetch(`https://ntfy.sh/${topic}?filename=${name}&message=${encodeURIComponent(JSON.stringify(note))}`, { method: 'PUT', body });
+      if (!r.ok) throw new Error(`http ${r.status}`);
+    };
+    info.textContent = 'שולח...';
+    await put('lk-events.json', new Blob([JSON.stringify({ ua: navigator.userAgent, v: VERSION, events })]), { export: 1, kind: 'events', n: events.length, parts: parts.length, chunks: chunks.length });
+    for (let i = 0; i < parts.length; i++) {
+      info.textContent = `שולח חלק ${i + 1} מתוך ${parts.length}...`;
+      const index = parts[i].map(({ blob, ...rest }) => ({ ...rest, size: blob ? blob.size : 0, type: blob ? blob.type : '' }));
+      const head = new TextEncoder().encode(JSON.stringify(index));
+      const len = new Uint8Array(4);
+      new DataView(len.buffer).setUint32(0, head.length);
+      await put(`lk-part-${i + 1}.bin`, new Blob([len, head, ...parts[i].map((c) => c.blob).filter(Boolean)]), { export: 1, kind: 'part', i: i + 1, of: parts.length, chunks: parts[i].length });
+      await new Promise((r) => setTimeout(r, 1200));
+    }
+    info.textContent = `נשלחו ${chunks.length} קטעים ב-${parts.length} חלקים. תודה.`;
+  } catch (e) {
+    info.textContent = `השליחה נעצרה באמצע (${e.message}). אפשר לנסות שוב מאוחר יותר.`;
+  } finally { btn.disabled = false; }
 }
 
 function diagNote(obj) {

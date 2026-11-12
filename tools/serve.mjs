@@ -49,7 +49,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/dev-bundle') {
       const s = await readJson(SECRET, {});
       const c = await readJson(CATALOG, { songs: [] });
-      return json(res, 200, { groqKey: s.groqKey || '', catalog: c });
+      return json(res, 200, { groqKey: s.groqKey || '', exportTopic: s.diagTopic || '', catalog: c });
     }
     if (p === '/api/report' && req.method === 'POST') { // end-to-end test hook (?auto=1)
       await mkdir(path.join(ROOT, '.cache', 'e2e'), { recursive: true });

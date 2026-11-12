@@ -72,4 +72,15 @@ export async function clearAll() {
   } catch (e) { return false; }
 }
 
+// Everything in one store, oldest first. Blobs come back as handles, not loaded into memory.
+export async function readAll(store) {
+  const db = await open();
+  return new Promise((res, rej) => {
+    const out = [];
+    const r = db.transaction(store).objectStore(store).openCursor();
+    r.onsuccess = () => { const c = r.result; if (c) { out.push(c.value); c.continue(); } else res(out); };
+    r.onerror = () => rej(r.error);
+  });
+}
+
 export const kept = () => Math.max(0, n);

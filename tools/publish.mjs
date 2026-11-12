@@ -18,7 +18,7 @@ await writeFile(SECRET, JSON.stringify(secret, null, 2));
 
 // The published bundle carries only what the phone needs.
 for (const s of catalog.songs) for (const sec of s.sections) delete sec.f;
-const plain = gzipSync(Buffer.from(JSON.stringify({ groqKey: secret.groqKey, catalog })));
+const plain = gzipSync(Buffer.from(JSON.stringify({ groqKey: secret.groqKey, exportTopic: secret.diagTopic || '', catalog })));
 const iv = randomBytes(12);
 const cipher = createCipheriv('aes-256-gcm', Buffer.from(secret.linkKey, 'base64url'), iv);
 const ct = Buffer.concat([cipher.update(plain), cipher.final()]);
